@@ -9,6 +9,7 @@ import { ASSESSMENT_STATUS, ASSIGNMENT_STATUS } from '../../utils/constants.js';
 import { buildPageMeta, parsePagination } from '../../utils/pagination.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
 import { isAnswered } from '../../scoring/scoringEngine.js';
+import { ageInYears } from '../../utils/age.js';
 
 const ACTIVE = [ASSIGNMENT_STATUS.ASSIGNED, ASSIGNMENT_STATUS.IN_PROGRESS];
 
@@ -115,9 +116,10 @@ export const getPatientAssignments = async (patientId) => {
 // Tones: 'low' | 'mid' | 'high' (3-segment), 'ok' | 'alert' (cutoff / clinical risk), 'warn', 'neutral'.
 
 const SEGMENTS = {
+  // Screening results only — never presented as a diagnosis.
   cutoff: [
-    { key: 'normal', label: 'Not indicated' },
-    { key: 'indicated', label: 'Indicated' },
+    { key: 'below', label: 'Below cutoff', chipLabel: 'Below screening cutoff' },
+    { key: 'meets', label: 'Meets cutoff', chipLabel: 'Meets screening cutoff' },
   ],
   bands: [
     { key: 'low', label: 'Low' },
@@ -143,14 +145,20 @@ const bandPosition = (bands = [], label) => {
 };
 
 const RISK_TONE = { high: 'alert', moderate: 'warn', low: 'ok' };
+const OPERATOR_SYMBOL = { gte: '≥', gt: '>' };
+const cutoffText = (cutoff) => `score ${OPERATOR_SYMBOL[cutoff.operator || 'gte'] || '≥'} ${cutoff.value}`;
+
+/** Screening-cutoff wording for a subscale or total: "Meets screening cutoff" / "Below screening cutoff". */
+const describeCutoff = (item, sourceText) => {
+  const rule = cutoffText(item.cutoff);
+  return item.meetsCutoff
+    ? { position: 'meets', label: 'Meets screening cutoff', tone: 'alert', detail: `Cutoff ${rule}${sourceText ? ` — ${sourceText}` : ''}`, source: 'cutoff' }
+    : { position: 'below', label: 'Below screening cutoff', tone: 'ok', detail: `Cutoff ${rule}`, source: 'cutoff' };
+};
 
 const describeSubscale = (s, kind, config) => {
   if (s.score === null || s.score === undefined) return { position: null, label: null, tone: 'neutral' };
-  if (kind === 'cutoff') {
-    return s.meetsCutoff
-      ? { position: 'indicated', label: 'Indicated', tone: 'alert', detail: s.cutoff?.label }
-      : { position: 'normal', label: 'Not indicated', tone: 'ok' };
-  }
+  if (kind === 'cutoff' && s.cutoff) return describeCutoff(s, s.cutoff.label);
   if (kind === 'bands' && s.band) {
     const position = bandPosition(config?.bands, s.band.label) ?? s.position;
     return { position, label: s.band.label, tone: position, detail: s.band.description };
@@ -161,6 +169,8 @@ const describeSubscale = (s, kind, config) => {
 
 const describeTotal = (total, outputs, totalConfig) => {
   if (!total || total.score === null || total.score === undefined) return null;
+  // A configured total cutoff (e.g. SCARED total ≥ 25) is reported as a screening result.
+  if (total.cutoff) return describeCutoff(total, total.band?.label);
   if (total.band) {
     // Append configured outputs (e.g. ISAA disability %) to the band label: "Moderate Autism (70%)".
     const extra = (outputs || []).filter((o) => o.value !== null && o.value !== undefined).map((o) => o.label);
@@ -182,7 +192,10 @@ const cardKind = (scoring) => {
 
 /** Everything the staff patient view needs for one attempt, fully calculated on the server. */
 export const getAttemptReport = async (assignmentId) => {
-  const assignment = await Assignment.findById(assignmentId).populate('assessment', 'code name').lean();
+  const assignment = await Assignment.findById(assignmentId)
+    .populate('assessment', 'code name')
+    .populate('patient', 'patientCode fullName email phone dateOfBirth age gender address city state pincode createdAt')
+    .lean();
   if (!assignment) throw ApiError.notFound('Assignment not found');
   const [version, response, result] = await Promise.all([
     AssessmentVersion.findById(assignment.assessmentVersion).lean(),
@@ -230,7 +243,7 @@ export const getAttemptReport = async (assignmentId) => {
     // Chip counts per segment, in display order (highest concern first for cutoffs, high → low otherwise).
     const chips = [...segments]
       .reverse()
-      .map((seg) => ({ ...seg, count: subscales.filter((x) => x.level.position === seg.key).length, tone: kind === 'cutoff' ? (seg.key === 'indicated' ? 'alert' : 'ok') : seg.key }))
+      .map((seg) => ({ key: seg.key, label: seg.chipLabel || seg.label, count: subscales.filter((x) => x.level.position === seg.key).length, tone: kind === 'cutoff' ? (seg.key === 'meets' ? 'alert' : 'ok') : seg.key }))
       .filter((chip) => chip.count > 0);
     score = {
       status: result.status,
@@ -238,8 +251,13 @@ export const getAttemptReport = async (assignmentId) => {
       reviewStatus: result.reviewStatus,
       kind,
       groupLabel: scoring.subscaleLabel || 'Sub-scales',
-      segments,
+      segments: segments.map(({ key, label }) => ({ key, label })),
       chips: kind === 'score' ? [] : chips,
+      // Extra source tables (e.g. ISAA "Percentage of Disability"). Values outside the table stay null.
+      outputs: (result.outputs || []).map((o) => {
+        const config = (scoring.outputs || []).find((x) => x.key === o.key);
+        return { key: o.key, name: o.name, value: o.value ?? null, label: o.value === null || o.value === undefined ? config?.unmatchedLabel || 'Not specified in reference' : o.label, note: o.note };
+      }),
       total: result.total
         ? {
             label: result.total.label,
@@ -261,13 +279,26 @@ export const getAttemptReport = async (assignmentId) => {
   return {
     assignment: {
       _id: assignment._id,
-      attemptCode: assignment.attemptCode,
       status: assignment.status,
       startedAt: assignment.startedAt,
       completedAt: assignment.completedAt,
       version: assignment.version,
     },
     assessment: { code: assignment.assessment.code, name: version.name },
+    patient: assignment.patient
+      ? {
+          _id: assignment.patient._id,
+          patientCode: assignment.patient.patientCode,
+          fullName: assignment.patient.fullName,
+          email: assignment.patient.email,
+          phone: assignment.patient.phone,
+          gender: assignment.patient.gender,
+          ageYears: ageInYears(assignment.patient),
+          address: [assignment.patient.address, assignment.patient.city, assignment.patient.state, assignment.patient.pincode].filter(Boolean).join(', '),
+          registeredOn: assignment.patient.createdAt,
+        }
+      : null,
+    generatedAt: new Date(),
     summary: {
       questions: questions.length,
       answered: answeredCount,
@@ -311,15 +342,4 @@ export const getSubmission = async (assignmentId) => {
     AssessmentResult.findOne({ assignment: assignmentId }).populate('reviewedBy', 'name').lean(),
   ]);
   return { assignment, version, response, result };
-};
-
-/** Staff lookup by human-friendly Attempt ID (case-insensitive). */
-export const findByAttemptCode = async (code) => {
-  const attemptCode = String(code).trim().toUpperCase();
-  const assignment = await Assignment.findOne({ attemptCode }).select('status attemptCode').lean();
-  if (!assignment) throw ApiError.notFound(`No attempt found with ID ${attemptCode}`);
-  if (assignment.status !== ASSIGNMENT_STATUS.COMPLETED) {
-    throw ApiError.badRequest(`Attempt ${attemptCode} has not been submitted yet, so there are no calculated scores.`);
-  }
-  return { assignmentId: assignment._id, attemptCode };
 };

@@ -39,6 +39,8 @@ const outputSchema = new mongoose.Schema(
     name: { type: String, required: true },
     source: { type: String, default: 'total' }, // 'total' or a subscale key
     bands: [bandSchema],
+    // Shown when the input falls outside every band (e.g. ISAA scores below 70): value stays null.
+    unmatchedLabel: { type: String, default: 'Not specified in reference' },
     note: String,
   },
   { _id: false },
@@ -55,6 +57,12 @@ export const scoringSchema = new mongoose.Schema(
       method: { type: String, enum: ['sum', 'mean'], default: 'sum' },
       label: { type: String, default: 'Total score' },
       bands: [bandSchema],
+      // Optional screening threshold for the total (e.g. SCARED total ≥ 25). Operator is configurable.
+      cutoff: {
+        value: Number,
+        operator: { type: String, enum: ['gte', 'gt'], default: 'gte' },
+        label: String,
+      },
     },
     subscales: [subscaleSchema],
     outputs: [outputSchema],

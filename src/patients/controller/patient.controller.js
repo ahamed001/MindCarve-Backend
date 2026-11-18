@@ -29,6 +29,8 @@ export const assign = async (req, res) => {
   sendSuccess(res, { created: created.length, skipped }, created.length ? 'Assessment(s) assigned' : 'No new assessments assigned', 201);
 };
 
+export const report = async (req, res) => sendSuccess(res, await patientService.getPatientReport(req.params.id));
+
 export const results = async (req, res) => {
   await patientService.getPatientOr404(req.params.id);
   sendSuccess(res, { items: await getPatientResultHistory(req.params.id) });

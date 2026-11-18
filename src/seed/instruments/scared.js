@@ -76,6 +76,8 @@ export const scared = {
         enabled: true,
         method: 'sum',
         label: 'Total anxiety score',
+        // Source: "Total anxiety ≥ 25". Operator is configurable ('gte' = score >= value).
+        cutoff: { value: 25, operator: 'gte', label: 'Total anxiety (may indicate the presence of an Anxiety Disorder)' },
         bands: [
           { min: null, max: 24, label: 'Below total anxiety cutoff (< 25)', riskLevel: 'low' },
           { min: 25, max: 30, label: 'May indicate the presence of an Anxiety Disorder', riskLevel: 'high', description: 'Source: total score ≥ 25' },

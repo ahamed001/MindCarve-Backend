@@ -79,7 +79,6 @@ Each module follows `model / service / controller / route`. Every response uses 
 - **Staff-registered patients** receive a single-use, expiring invitation link to set their password.
 - **Take a Quiz** (`GET /api/me/quizzes`, `POST /api/me/quizzes/:assessmentId/start`): every published assessment is listed; starting reuses the patient's open attempt or creates one from the current published version.
 - **Answers save on every click** (`PUT /api/me/assignments/:id/responses`) with one atomic update per answer, so concurrent saves never lose data. Submission is atomic and can happen only once.
-- **Attempt IDs** (`ATT-<patient number>-<attempt>`) identify each attempt; staff look up results with `GET /api/assignments/attempt/:code`.
 
 ## Security model
 
@@ -89,6 +88,18 @@ Each module follows `model / service / controller / route`. Every response uses 
 - Patients never receive option scores, scoring rules, sensitivity markers, clinician notes or results.
 - Rate-limited auth endpoints, `helmet`, JSON body limit, `Cache-Control: no-store`, `express-validator` on all input.
 - Reports (identifiable data) are admin-only. Sensitive actions are recorded in the activity log.
+
+## Activity feed and audit log
+
+- **Activity** (`GET /api/activity`, staff): readable feed — patient registered, assessment started / completed, flagged for review, notes added, reports generated — with the patient's name and Patient ID and who did it.
+- **Audit log** (`GET /api/audit`, admin only): append-only record of sign-ins (including failed attempts), sign-outs, password resets, self-registration, viewing a patient record, viewing answers and scores, printing a patient report, profile / status changes, notes, assessment start / submit and report generation / download. Each entry stores who (name, email, role), the patient (name, Patient ID), time, IP address, browser and success / failure. Entries cannot be updated or deleted.
+
+## Switching to MongoDB Atlas
+
+1. In Atlas → **Security → Network Access**, add this machine's public IP (or the server's IP in production).
+2. In `.env`: set `MONGO_URI` and `DATABASE_NAME`, and `USE_IN_MEMORY_DB=false`.
+3. Run `npm run seed` once (admin, the six instruments published as v1, and the dev patient outside production).
+4. `npm run dev`. Local `.dev-db` data is not copied across.
 
 ## Assessments, versioning and scoring
 

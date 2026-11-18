@@ -32,10 +32,18 @@ const aggregate = (values, method) => {
   return method === 'mean' ? round(sum / values.length) : round(sum);
 };
 
-const meetsCutoff = (value, cutoff) => {
+/** Supported cutoff comparison operators (configured per subscale / total). Default: 'gte' (score >= cutoff). */
+export const CUTOFF_OPERATORS = { gte: (v, c) => v >= c, gt: (v, c) => v > c };
+
+export const meetsCutoff = (value, cutoff) => {
   if (!cutoff || cutoff.value === null || cutoff.value === undefined) return null;
-  return cutoff.operator === 'gt' ? value > cutoff.value : value >= cutoff.value;
+  if (value === null || value === undefined) return null;
+  const compare = CUTOFF_OPERATORS[cutoff.operator || 'gte'];
+  if (!compare) throw new Error(`Unsupported cutoff operator "${cutoff.operator}"`);
+  return compare(value, cutoff.value);
 };
+
+const hasCutoff = (cutoff) => cutoff && cutoff.value !== null && cutoff.value !== undefined;
 
 const isScorable = (q) => q.type !== 'text' && !q.excludedFromScoring;
 
@@ -180,7 +188,7 @@ export const scoreAssessment = (snapshot, answers = []) => {
       max,
       position: rangePosition(score, min, max),
       band: band ? { label: band.label, riskLevel: band.riskLevel ?? null, description: band.description } : null,
-      cutoff: sub.cutoff?.value !== undefined && sub.cutoff?.value !== null ? sub.cutoff : null,
+      cutoff: hasCutoff(sub.cutoff) ? { value: sub.cutoff.value, operator: sub.cutoff.operator || 'gte', label: sub.cutoff.label } : null,
       meetsCutoff: cutoffMet,
     };
   });
@@ -200,6 +208,8 @@ export const scoreAssessment = (snapshot, answers = []) => {
       position: rangePosition(score, min, max),
       itemCount: values.length,
       band: band ? { label: band.label, riskLevel: band.riskLevel ?? null, description: band.description } : null,
+      cutoff: hasCutoff(scoring.total?.cutoff) ? { value: scoring.total.cutoff.value, operator: scoring.total.cutoff.operator || 'gte', label: scoring.total.cutoff.label } : null,
+      meetsCutoff: meetsCutoff(score, scoring.total?.cutoff),
     };
   }
 
@@ -217,7 +227,8 @@ export const scoreAssessment = (snapshot, answers = []) => {
       source: out.source || 'total',
       input,
       value: band ? band.value ?? null : null,
-      label: band ? band.label : 'Not listed in the configured source table',
+      // No matching row in the source table: value stays null — never a made-up value such as 0%.
+      label: band ? band.label : out.unmatchedLabel || 'Not specified in reference',
       note: out.note,
     };
   });

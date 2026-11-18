@@ -140,7 +140,7 @@ export const registerPatient = async (data) => {
   try {
     ({ status: emailStatus } = await sendEmail({
       to: email,
-      ...welcomeEmail({ name: patient.fullName, email, patientCode: patient.patientCode, link: loginLink }),
+      ...welcomeEmail({ name: patient.fullName, email, patientCode: patient.patientCode, password: data.password, link: loginLink }),
     }));
   } catch (error) {
     emailStatus = 'failed';

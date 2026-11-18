@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate.middleware.js';
 import { body, idParam } from '../../utils/validators.js';
 import { ROLES } from '../../utils/constants.js';
 import * as c from '../controller/response.controller.js';
+import { audit } from '../../middleware/audit.middleware.js';
 
 // Patient-facing routes mounted at /api/me. Patients only.
 const router = Router();
@@ -20,10 +21,15 @@ const answerRules = (required) => [
 
 router.get('/profile', asyncHandler(c.profile));
 router.get('/quizzes', asyncHandler(c.listQuizzes));
-router.post('/quizzes/:assessmentId/start', validate([idParam('assessmentId')]), asyncHandler(c.startQuiz));
+router.post(
+  '/quizzes/:assessmentId/start',
+  validate([idParam('assessmentId')]),
+  audit('assessment.started', (req, data) => ({ assignmentId: data?.assignmentId })),
+  asyncHandler(c.startQuiz),
+);
 router.get('/assignments', asyncHandler(c.listAssignments));
 router.get('/assignments/:id', validate([idParam()]), asyncHandler(c.getAssignment));
 router.put('/assignments/:id/responses', validate([idParam(), ...answerRules(true)]), asyncHandler(c.saveProgress));
-router.post('/assignments/:id/submit', validate([idParam(), ...answerRules(false)]), asyncHandler(c.submit));
+router.post('/assignments/:id/submit', validate([idParam(), ...answerRules(false)]), audit('assessment.submitted', (req) => ({ assignmentId: req.params.id })), asyncHandler(c.submit));
 
 export default router;

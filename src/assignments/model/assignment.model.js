@@ -1,6 +1,5 @@
 import mongoose from 'mongoose';
 import { ASSIGNMENT_STATUS } from '../../utils/constants.js';
-import { nextSequence } from '../../utils/counter.model.js';
 
 const assignmentSchema = new mongoose.Schema(
   {
@@ -15,19 +14,9 @@ const assignmentSchema = new mongoose.Schema(
     startedAt: Date,
     completedAt: { type: Date, index: true },
     note: { type: String, maxlength: 500 },
-    // Human-friendly Attempt ID: ATT-<patient number>-<attempt number for that patient>, e.g. ATT-7-3.
-    attemptCode: { type: String, unique: true, sparse: true },
     isDemo: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
-
-assignmentSchema.pre('validate', async function assignAttemptCode() {
-  if (!this.isNew || this.attemptCode) return;
-  const patient = await mongoose.model('Patient').findById(this.patient).select('patientCode').lean();
-  const patientNumber = Number(String(patient?.patientCode || '').replace(/\D/g, '')) || 0;
-  const attempt = await nextSequence(`attempt:${this.patient}`);
-  this.attemptCode = `ATT-${patientNumber}-${attempt}`;
-});
 
 export const Assignment = mongoose.model('Assignment', assignmentSchema);

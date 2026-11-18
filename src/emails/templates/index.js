@@ -16,17 +16,19 @@ export const invitationEmail = ({ name, link, expiresHours }) => ({
   }),
 });
 
-// Sent after self-registration. Contains the sign-in identity and a login link — never the password.
-export const welcomeEmail = ({ name, email, patientCode, link }) => ({
+// Sent after self-registration with the patient's login details, including the password they chose
+// (requested by the hospital). Advises the patient to keep the email private.
+export const welcomeEmail = ({ name, email, patientCode, password, link }) => ({
   subject: 'Your Athma Mind Care account is ready',
-  text: `Hello ${name},\n\nThank you for registering with Athma Mind Care Hospital.\n\nYour login details:\n  Patient ID: ${patientCode}\n  Login email: ${email}\n  Password: the password you chose during registration\n\nSign in here: ${link}\n\nFor your security we never send passwords by email. If you forget it, use "Forgot password" on the sign-in page.\n\nIf you did not create this account, please contact the hospital.`,
+  text: `Hello ${name},\n\nThank you for registering with Athma Mind Care Hospital.\n\nYour login details:\n  Patient ID: ${patientCode}\n  Login email: ${email}\n  Password: ${password}\n\nLog in here: ${link}\n\nPlease keep this email private. You can change your password any time with "Forgot password" on the login page.\n\nIf you did not create this account, please contact the hospital.`,
   html: renderLayout({
     heading: `Welcome to Athma, ${name}`,
     paragraphs: [
       'Thank you for registering with Athma Mind Care Hospital. Your patient account is ready.',
       `Patient ID: ${patientCode}`,
       `Login email: ${email}`,
-      'Password: the password you chose during registration. For your security we never send passwords by email — if you forget it, use “Forgot password” on the sign-in page.',
+      `Password: ${password}`,
+      'Please keep this email private. You can change your password any time with “Forgot password” on the login page.',
     ],
     ctaLabel: 'Log in to Athma',
     ctaUrl: link,

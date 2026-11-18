@@ -296,6 +296,7 @@ describe('Record isolation, invitations and versioning', () => {
       ['post', `/api/assessments/${bfi._id}/publish`],
       ['put', `/api/assessments/${bfi._id}`],
       ['post', `/api/assessments/${bfi._id}/questions`],
+      ['post', `/api/assessments/${bfi._id}/archive`],
     ]) {
       const res = await request(app)[method](path).set('Cookie', adminCookie).send({});
       assert.equal(res.status, 404, `${method} ${path}`);
@@ -389,32 +390,6 @@ describe('Per-click autosave', () => {
   });
 });
 
-describe('Attempt ID lookup', () => {
-  test('completed attempts are found by their Attempt ID; unsubmitted ones are refused', async () => {
-    const p = await onboard('attempt@example.test', [String(gds._id)]);
-    const quizzes = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items;
-    const beis = quizzes.find((q) => q.code === 'BEIS-10');
-    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${beis.assessmentId}/start`).set('Cookie', p.cookie)).body.data;
-    const sub = await request(app).get(`/api/assignments/${assignmentId}/submission`).set('Cookie', adminCookie);
-    const code = sub.body.data.assignment.attemptCode;
-    assert.match(code, /^ATT-\d+-2$/, 'second attempt for this patient');
-
-    const pending = await request(app).get(`/api/assignments/attempt/${code.toLowerCase()}`).set('Cookie', adminCookie);
-    assert.equal(pending.status, 400);
-
-    const answers = Array.from({ length: 10 }, (_, i) => ({ itemId: String(i + 1), value: '3' }));
-    await request(app).post(`/api/me/assignments/${assignmentId}/submit`).set('Cookie', p.cookie).send({ answers });
-    const found = await request(app).get(`/api/assignments/attempt/${code}`).set('Cookie', adminCookie);
-    assert.equal(found.status, 200);
-    assert.equal(found.body.data.assignmentId, assignmentId);
-
-    const missing = await request(app).get('/api/assignments/attempt/ATT-999-1').set('Cookie', adminCookie);
-    assert.equal(missing.status, 404);
-    const patientTry = await request(app).get(`/api/assignments/attempt/${code}`).set('Cookie', p.cookie);
-    assert.equal(patientTry.status, 403);
-  });
-});
-
 describe('Attempt report (all numbers calculated on the server)', () => {
   test('BEIS-10 report gives totals out of max, levels, counts and per-answer scores', async () => {
     const p = await onboard('report@example.test', []);
@@ -435,6 +410,8 @@ describe('Attempt report (all numbers calculated on the server)', () => {
     assert.equal(score.subscales.length, 5);
     assert.equal(score.chips.reduce((n, c) => n + c.count, 0), 5);
     assert.ok(score.rangeNote);
+    assert.equal(res.body.data.patient.fullName, 'Test Patient');
+    assert.equal(res.body.data.patient.ageYears, 76);
     assert.equal(questions[0].answerLabel, 'Agree');
     assert.equal(questions[0].score, 4);
 
@@ -464,9 +441,11 @@ describe('Score summary display per instrument (decided on the server)', () => {
 
     const scared = await take('SCARED-P', '2'); // all "Very True" → every cutoff met
     assert.equal(scared.kind, 'cutoff');
-    assert.deepEqual(scared.segments.map((s) => s.label), ['Not indicated', 'Indicated']);
-    assert.ok(scared.subscales.every((s) => s.level.label === 'Indicated' && s.level.tone === 'alert'));
-    assert.deepEqual(scared.chips, [{ key: 'indicated', label: 'Indicated', count: 5, tone: 'alert' }]);
+    assert.deepEqual(scared.segments.map((s) => s.label), ['Below cutoff', 'Meets cutoff']);
+    assert.ok(scared.subscales.every((s) => s.level.label === 'Meets screening cutoff' && s.level.tone === 'alert'));
+    assert.deepEqual(scared.chips, [{ key: 'meets', label: 'Meets screening cutoff', count: 5, tone: 'alert' }]);
+    assert.equal(scared.total.level.label, 'Meets screening cutoff');
+    assert.match(scared.total.level.detail, /score ≥ 25/);
     assert.equal(scared.total.level.tone, 'alert');
 
     const bfi = await take('BFI-10', '4');
@@ -481,6 +460,7 @@ describe('Score summary display per instrument (decided on the server)', () => {
     assert.equal(isaa.groupLabel, 'Domains');
     assert.equal(isaa.total.score, 120);
     assert.equal(isaa.total.level.label, 'Moderate Autism (70%)');
+    assert.deepEqual(isaa.outputs.map((o) => [o.value, o.label]), [[70, '70%']]);
     assert.equal(isaa.total.level.tone, 'alert');
     assert.deepEqual(isaa.chips, []);
 
@@ -500,5 +480,95 @@ describe('Patient detail lists every published assessment', () => {
     assert.deepEqual(rows.map((r) => r.code), ['BEIS-10', 'MHI-38', 'SCARED-P', 'ISAA', 'GDS-15', 'BFI-10']);
     assert.ok(rows.every((r) => r.state === 'not_started' && r.attempt === null));
     assert.equal(res.body.data.completedCount, 0);
+  });
+});
+
+describe('Combined patient report', () => {
+  test('includes every started assessment with scores and answers; lists not-started ones', async () => {
+    const p = await onboard('combined@example.test', []);
+    const quizzes = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items;
+    const start = async (code) => (await request(app).post(`/api/me/quizzes/${quizzes.find((q) => q.code === code).assessmentId}/start`).set('Cookie', p.cookie)).body.data.assignmentId;
+    const beis = await start('BEIS-10');
+    await request(app).post(`/api/me/assignments/${beis}/submit`).set('Cookie', p.cookie).send({ answers: Array.from({ length: 10 }, (_, i) => ({ itemId: String(i + 1), value: '3' })) });
+    const gdsId = await start('GDS-15');
+    await request(app).put(`/api/me/assignments/${gdsId}/responses`).set('Cookie', p.cookie).send({ answers: [{ itemId: '1', value: 'no' }] });
+
+    const res = await request(app).get(`/api/patients/${p.patient._id}/report`).set('Cookie', adminCookie);
+    assert.equal(res.status, 200);
+    const { patient, sections, notStarted } = res.body.data;
+    assert.equal(patient.fullName, 'Test Patient');
+    assert.deepEqual(sections.map((s) => [s.assessment.code, s.state]), [['BEIS-10', 'completed'], ['GDS-15', 'in_progress']]);
+    assert.equal(sections[0].score.total.score, 30);
+    assert.equal(sections[1].summary.answered, 1);
+    assert.equal(notStarted.length, 4);
+
+    const patientTry = await request(app).get(`/api/patients/${p.patient._id}/report`).set('Cookie', p.cookie);
+    assert.equal(patientTry.status, 403);
+  });
+});
+
+describe('ISAA below 70 and SCARED screening wording in the report', () => {
+  test('ISAA total below 70: No Autism, disability % null, "Not specified in reference"', async () => {
+    const p = await onboard('isaa-low@example.test', []);
+    const quizzes = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items;
+    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${quizzes.find((q) => q.code === 'ISAA').assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+    // 40 items × "Rarely" (1) = 40
+    await request(app).post(`/api/me/assignments/${assignmentId}/submit`).set('Cookie', p.cookie).send({ answers: Array.from({ length: 40 }, (_, i) => ({ itemId: String(i + 1), value: '1' })) });
+    const score = (await request(app).get(`/api/assignments/${assignmentId}/report`).set('Cookie', adminCookie)).body.data.score;
+    assert.equal(score.total.score, 40);
+    assert.equal(score.total.level.label, 'No Autism');
+    assert.deepEqual(score.outputs.map((o) => [o.value, o.label]), [[null, 'Not specified in reference']]);
+  });
+});
+
+describe('Seeded instrument scoring sync', () => {
+  test('an outdated seeded scoring configuration is updated and published as a new version', async () => {
+    const { syncSeedInstruments } = await import('../src/seed/seed.js');
+    const scared = await Assessment.findOne({ code: 'SCARED-P' });
+    const before = scared.currentVersion;
+    scared.scoring.total.cutoff = undefined; // simulate an older configuration
+    await scared.save();
+    const lines = await syncSeedInstruments();
+    assert.ok(lines.some((l) => l.startsWith('SCARED-P: scoring configuration updated')));
+    const after = await Assessment.findOne({ code: 'SCARED-P' });
+    assert.equal(after.currentVersion, before + 1);
+    assert.equal(after.scoring.total.cutoff.value, 25);
+    assert.ok((await syncSeedInstruments()).every((l) => l.endsWith('up to date')));
+  });
+});
+
+describe('Audit log', () => {
+  test('records who did what to which patient, including failed logins; admin-only and append-only', async () => {
+    const { AuditLog } = await import('../src/audit/model/auditLog.model.js');
+    const p = await onboard('audited@example.test', []);
+    await request(app).post('/api/auth/login').send({ email: 'admin@athma.local', password: 'wrong-password', portal: 'staff' });
+    await request(app).get(`/api/patients/${p.patient._id}`).set('Cookie', adminCookie);
+    await request(app).get(`/api/patients/${p.patient._id}/report`).set('Cookie', adminCookie);
+    await request(app).post(`/api/patients/${p.patient._id}/notes`).set('Cookie', adminCookie).send({ body: 'Called patient.' });
+    const quizzes = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items;
+    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${quizzes.find((q) => q.code === 'BEIS-10').assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+    await request(app).post(`/api/me/assignments/${assignmentId}/submit`).set('Cookie', p.cookie).send({ answers: Array.from({ length: 10 }, (_, i) => ({ itemId: String(i + 1), value: '3' })) });
+    await new Promise((r) => setTimeout(r, 150)); // audit entries are written after the response finishes
+
+    const res = await request(app).get('/api/audit').query({ patient: String(p.patient._id), limit: 50 }).set('Cookie', adminCookie);
+    assert.equal(res.status, 200);
+    const actions = res.body.data.items.map((i) => i.action);
+    for (const a of ['patient.created', 'auth.invitation_accepted', 'patient.viewed', 'patient.report_printed', 'patient.note_added', 'assessment.started', 'assessment.submitted']) {
+      assert.ok(actions.includes(a), `missing ${a}`);
+    }
+    const note = res.body.data.items.find((i) => i.action === 'patient.note_added');
+    assert.equal(note.patientName, 'Test Patient');
+    assert.match(note.patientCode, /^ATH-\d{4}$/);
+    assert.equal(note.actorRole, 'admin');
+    assert.equal(note.actionLabel, 'Added a note to the patient');
+
+    const failed = await request(app).get('/api/audit').query({ action: 'auth.login_failed' }).set('Cookie', adminCookie);
+    assert.ok(failed.body.data.items.some((i) => i.actorEmail === 'admin@athma.local' && i.outcome === 'failure'));
+
+    const patientTry = await request(app).get('/api/audit').set('Cookie', p.cookie);
+    assert.equal(patientTry.status, 403);
+
+    await assert.rejects(AuditLog.updateOne({}, { action: 'tampered' }));
+    await assert.rejects(AuditLog.deleteMany({}));
   });
 });

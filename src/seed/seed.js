@@ -26,12 +26,54 @@ const ensureStaff = async ({ name, email, password, role, isDemo = false }) => {
   return User.create({ name, email, role, status: 'active', passwordHash: await hashPassword(password), isDemo });
 };
 
+/**
+ * Keeps a seeded instrument's scoring configuration (and its source notes) in line with the code.
+ * When they differ, the configuration is updated and a NEW version is published — earlier attempts keep
+ * the version they were taken under. Questions are never changed here.
+ */
+// Canonical form for comparison: schema defaults applied, keys sorted, empty arrays/objects dropped.
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.length ? value.map(canonical) : undefined;
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    const entries = Object.keys(value)
+      .sort()
+      .map((k) => [k, canonical(value[k])])
+      .filter(([, v]) => v !== undefined);
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  }
+  return value;
+};
+const normalisedScoring = (scoring) => JSON.stringify(canonical(new Assessment({ code: 'X', name: 'X', scoring }).toObject().scoring) ?? null);
+
+export const syncSeedScoring = async (existing, definition) => {
+  if (!existing.isSeed) return 'exists (not a seeded instrument, left unchanged)';
+  const before = normalisedScoring(existing.scoring?.toObject ? existing.scoring.toObject() : existing.scoring);
+  const after = normalisedScoring(definition.scoring);
+  if (before === after) return 'up to date';
+  existing.scoring = definition.scoring;
+  existing.sourceNotes = definition.sourceNotes;
+  existing.discrepancies = definition.discrepancies;
+  await existing.save();
+  const updated = await publishAssessment(existing._id, null);
+  return `scoring configuration updated — published as v${updated.currentVersion}`;
+};
+
+/** Runs the scoring sync for all built-in instruments (used on every development start-up). */
+export const syncSeedInstruments = async () => {
+  const lines = [];
+  for (const { assessment } of instruments) {
+    const existing = await Assessment.findOne({ code: assessment.code });
+    if (existing) lines.push(`${assessment.code}: ${await syncSeedScoring(existing, assessment)}`);
+  }
+  return lines;
+};
+
 export const seedInstruments = async (admin) => {
   const summary = [];
   for (const { assessment, questions } of instruments) {
     const existing = await Assessment.findOne({ code: assessment.code });
     if (existing) {
-      summary.push(`${assessment.code}: exists (left unchanged)`);
+      summary.push(`${assessment.code}: ${await syncSeedScoring(existing, assessment)}`);
       continue;
     }
     const created = await Assessment.create({ ...assessment, isSeed: true, createdBy: admin._id, updatedBy: admin._id });
@@ -230,7 +272,7 @@ export const seedDevPatient = async (admin) => {
   return [`Patient: ${email} / ${password} (development credentials, ${patient.patientCode})`];
 };
 
-export const runSeed = async ({ withDemo = false } = {}) => {
+export const runSeed = async ({ withDemo = false, withDevPatient = true } = {}) => {
   // Short development passwords (e.g. admin123) are allowed locally but never in production.
   if (env.isProduction && (env.seedAdmin.password.length < 12 || ['Admin@12345', 'admin123'].includes(env.seedAdmin.password))) {
     throw new Error('Refusing to seed a weak admin password in production. Set a strong SEED_ADMIN_PASSWORD (12+ characters).');
@@ -250,15 +292,17 @@ export const runSeed = async ({ withDemo = false } = {}) => {
     lines.push(`Clinician (demo): ${clinician.email} / Clinician@123`);
     lines.push(...(await seedDemoData(admin, clinician)));
   }
-  if (!env.isProduction) lines.push(...(await seedDevPatient(admin)));
+  if (!env.isProduction && withDevPatient) lines.push(...(await seedDevPatient(admin)));
   lines.forEach((l) => console.info(`[seed] ${l}`));
   return lines;
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const withDemo = process.argv.includes('--demo');
+  // --base: admin + the six instruments only (no dev patient, no demo data) — for a real database.
+  const base = process.argv.includes('--base');
   connectDatabase()
-    .then(() => runSeed({ withDemo }))
+    .then(() => runSeed({ withDemo: withDemo && !base, withDevPatient: !base }))
     .then(() => disconnectDatabase())
     .then(() => process.exit(0))
     .catch((error) => {

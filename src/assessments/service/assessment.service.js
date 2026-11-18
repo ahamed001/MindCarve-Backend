@@ -158,31 +158,6 @@ export const publishAssessment = async (id, actor) => {
   return getAssessment(id);
 };
 
-export const archiveAssessment = async (id, actor) => {
-  const assessment = await findAssessmentOr404(id);
-  assessment.status = ASSESSMENT_STATUS.ARCHIVED;
-  assessment.updatedBy = actor._id;
-  await assessment.save();
-  await logActivity({
-    actor,
-    action: ACTIONS.ASSESSMENT_ARCHIVED,
-    category: 'content',
-    message: `${actor.name} archived ${assessment.code}`,
-    entityType: 'Assessment',
-    entityId: assessment._id,
-  });
-  return getAssessment(id);
-};
-
-export const restoreAssessment = async (id, actor) => {
-  const assessment = await findAssessmentOr404(id);
-  if (assessment.status !== ASSESSMENT_STATUS.ARCHIVED) throw ApiError.badRequest('Assessment is not archived');
-  assessment.status = assessment.publishedVersion ? ASSESSMENT_STATUS.PUBLISHED : ASSESSMENT_STATUS.DRAFT;
-  assessment.updatedBy = actor._id;
-  await assessment.save();
-  return getAssessment(id);
-};
-
 export const getVersion = async (versionId) => {
   const version = await AssessmentVersion.findById(versionId).lean();
   if (!version) throw ApiError.notFound('Assessment version not found');

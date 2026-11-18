@@ -5,6 +5,9 @@ import { validate } from '../../middleware/validate.middleware.js';
 import { body, emailRule, idParam, query } from '../../utils/validators.js';
 import { ROLES } from '../../utils/constants.js';
 import * as c from '../controller/patient.controller.js';
+import { audit } from '../../middleware/audit.middleware.js';
+
+const byParam = (req) => ({ patientId: req.params.id });
 
 const router = Router();
 const adminOnly = authorize(ROLES.ADMIN);
@@ -56,12 +59,13 @@ router.post(
     body('assessmentIds.*').isMongoId(),
     body('dueDate').optional({ values: 'falsy' }).isISO8601(),
   ]),
+  audit('patient.created', (req, data) => ({ patientId: data?.patient?._id })),
   asyncHandler(c.create),
 );
-router.get('/:id', staff, validate([idParam()]), asyncHandler(c.detail));
-router.put('/:id', adminOnly, validate([idParam(), ...profileRules(true), body('email').optional().isEmail()]), asyncHandler(c.update));
-router.patch('/:id/status', adminOnly, validate([idParam(), body('status').isIn(['active', 'inactive'])]), asyncHandler(c.setStatus));
-router.post('/:id/invitation/resend', adminOnly, validate([idParam()]), asyncHandler(c.resendInvitation));
+router.get('/:id', staff, validate([idParam()]), audit('patient.viewed', byParam), asyncHandler(c.detail));
+router.put('/:id', adminOnly, validate([idParam(), ...profileRules(true), body('email').optional().isEmail()]), audit('patient.updated', byParam), asyncHandler(c.update));
+router.patch('/:id/status', adminOnly, validate([idParam(), body('status').isIn(['active', 'inactive'])]), audit('patient.status_changed', (req) => ({ patientId: req.params.id, details: `Status → ${req.body.status}` })), asyncHandler(c.setStatus));
+router.post('/:id/invitation/resend', adminOnly, validate([idParam()]), audit('patient.invitation_resent', byParam), asyncHandler(c.resendInvitation));
 router.get('/:id/assignments', staff, validate([idParam()]), asyncHandler(c.assignments));
 router.post(
   '/:id/assignments',
@@ -75,12 +79,14 @@ router.post(
   ]),
   asyncHandler(c.assign),
 );
+router.get('/:id/report', staff, validate([idParam()]), audit('patient.report_printed', byParam), asyncHandler(c.report));
 router.get('/:id/results', staff, validate([idParam()]), asyncHandler(c.results));
 router.get('/:id/notes', staff, validate([idParam()]), asyncHandler(c.notes));
 router.post(
   '/:id/notes',
   staff,
   validate([idParam(), body('body').isString().trim().isLength({ min: 1, max: 5000 }).withMessage('Note cannot be empty'), body('assignment').optional().isMongoId()]),
+  audit('patient.note_added', (req, data) => ({ patientId: req.params.id, entityType: 'ClinicianNote', entityId: data?._id })),
   asyncHandler(c.createNote),
 );
 

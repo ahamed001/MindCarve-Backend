@@ -1,4 +1,5 @@
 import { Patient } from '../model/patient.model.js';
+import { ageInYears } from '../../utils/age.js';
 import { Assessment } from '../../assessments/model/assessment.model.js';
 import { User } from '../../users/model/user.model.js';
 import { Assignment } from '../../assignments/model/assignment.model.js';
@@ -9,18 +10,10 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ASSESSMENT_STATUS, ASSIGNMENT_STATUS, ROLES } from '../../utils/constants.js';
 import { buildPageMeta, escapeRegex, parsePagination } from '../../utils/pagination.js';
 import { issueToken, latestInvitationFor } from '../../auth/service/invitation.service.js';
-import { assignAssessments, getPatientAssignments } from '../../assignments/service/assignment.service.js';
+import { assignAssessments, getAttemptReport, getPatientAssignments } from '../../assignments/service/assignment.service.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
 
-/** Age from date of birth when known, otherwise the self-reported age. */
-export const ageInYears = (p) => {
-  if (!p.dateOfBirth) return p.age ?? null;
-  const dob = new Date(p.dateOfBirth);
-  const now = new Date();
-  let age = now.getFullYear() - dob.getFullYear();
-  if (now.getMonth() < dob.getMonth() || (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate())) age -= 1;
-  return age;
-};
+export { ageInYears } from '../../utils/age.js';
 
 const PROFILE_FIELDS = [
   'fullName',
@@ -168,6 +161,36 @@ export const getPatientOr404 = async (id) => {
   const patient = await Patient.findById(id);
   if (!patient) throw ApiError.notFound('Patient not found');
   return patient;
+};
+
+/**
+ * Combined printable report for a patient: every published assessment the patient has started
+ * (completed or in progress), in quiz order, each with its server-calculated scores and answers.
+ */
+export const getPatientReport = async (id) => {
+  const { patient, assessments } = await getPatientDetail(id);
+  const withAttempts = assessments.filter((a) => a.attempt);
+  const sections = [];
+  for (const row of withAttempts) {
+    const report = await getAttemptReport(row.attempt._id);
+    sections.push({ state: row.state, assignment: report.assignment, assessment: report.assessment, summary: report.summary, questions: report.questions, score: report.score });
+  }
+  return {
+    patient: {
+      _id: patient._id,
+      patientCode: patient.patientCode,
+      fullName: patient.fullName,
+      email: patient.email,
+      phone: patient.phone,
+      gender: patient.gender,
+      ageYears: patient.ageYears,
+      address: [patient.address, patient.city, patient.state, patient.pincode].filter(Boolean).join(', '),
+      registeredOn: patient.createdAt,
+    },
+    generatedAt: new Date(),
+    sections,
+    notStarted: assessments.filter((a) => !a.attempt).map((a) => a.name),
+  };
 };
 
 export const getPatientDetail = async (id) => {

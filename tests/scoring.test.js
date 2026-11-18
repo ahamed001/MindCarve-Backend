@@ -155,11 +155,25 @@ describe('ISAA (classification + separate percentage table)', () => {
   const run = (total) => scoreAssessment(snap(isaa), isaaAnswersForTotal(total));
   const pct = (r) => r.outputs.find((o) => o.key === 'disability_percentage');
 
-  test('minimum score 40 => No Autism, percentage not listed in source', () => {
+  test('minimum score 40 => No Autism, percentage not specified in reference (never 0%)', () => {
     const r = run(40);
     assert.equal(r.total.score, 40);
     assert.equal(r.total.band.label, 'No Autism');
     assert.equal(pct(r).value, null);
+    assert.equal(pct(r).label, 'Not specified in reference');
+  });
+
+  test('score 69 => No Autism with no percentage; score 70 => Mild Autism with 40%', () => {
+    assert.equal(run(69).total.band.label, 'No Autism');
+    assert.equal(pct(run(69)).value, null);
+    assert.equal(pct(run(69)).label, 'Not specified in reference');
+    assert.equal(run(70).total.band.label, 'Mild Autism');
+    assert.equal(pct(run(70)).value, 40);
+  });
+
+  test('percentage table boundaries are preserved exactly', () => {
+    const table = [[70, 40], [71, 50], [88, 50], [89, 60], [105, 60], [106, 70], [123, 70], [124, 80], [140, 80], [141, 90], [158, 90], [159, 100], [200, 100]];
+    for (const [total, value] of table) assert.equal(pct(run(total)).value, value, String(total));
   });
 
   test('boundaries preserved as in source (discrepancy not reconciled)', () => {
@@ -289,5 +303,67 @@ describe('Score ranges and range position (backend-only calculations)', () => {
   test('item scores are returned for storage', () => {
     const r = scoreAssessment(snap(bfi10), answersFrom([2, 3, 3, 3, 3, 4, 3, 3, 3, 3]));
     assert.deepEqual(r.itemScores['1'], { raw: 2, score: 4, reversed: true });
+  });
+});
+
+describe('SCARED cutoff operator and total threshold', () => {
+  const panicItems = scared.assessment.scoring.subscales[0].itemIds.map(Number);
+  const buildPanic = (points) => {
+    const values = Array(41).fill(0);
+    let left = points;
+    for (const item of panicItems) {
+      if (left <= 0) break;
+      const add = Math.min(2, left);
+      values[item - 1] = add;
+      left -= add;
+    }
+    return answersFrom(values);
+  };
+  const buildTotal = (total) => {
+    const values = Array(41).fill(0);
+    let left = total;
+    for (let i = 0; i < 41 && left > 0; i += 1) {
+      const add = Math.min(2, left);
+      values[i] = add;
+      left -= add;
+    }
+    return answersFrom(values);
+  };
+
+  test('every subscale uses score >= cutoff by default (exact source cutoffs)', () => {
+    const cutoffs = Object.fromEntries(scared.assessment.scoring.subscales.map((s) => [s.key, [s.cutoff.value, s.cutoff.operator]]));
+    assert.deepEqual(cutoffs, {
+      panic_somatic: [7, 'gte'],
+      generalized_anxiety: [9, 'gte'],
+      separation_anxiety: [5, 'gte'],
+      social_anxiety: [8, 'gte'],
+      school_avoidance: [3, 'gte'],
+    });
+  });
+
+  test('total anxiety: 24 below, 25 meets (>= 25)', () => {
+    const r24 = scoreAssessment(snap(scared), buildTotal(24));
+    const r25 = scoreAssessment(snap(scared), buildTotal(25));
+    assert.deepEqual([r24.total.score, r24.total.meetsCutoff], [24, false]);
+    assert.deepEqual([r25.total.score, r25.total.meetsCutoff], [25, true]);
+    assert.deepEqual(r25.total.cutoff, { value: 25, operator: 'gte', label: scared.assessment.scoring.total.cutoff.label });
+  });
+
+  test('the operator is configurable: with "gt", 7 no longer meets the panic cutoff but 8 does', () => {
+    const scoring = structuredClone(scared.assessment.scoring);
+    scoring.subscales[0].cutoff.operator = 'gt';
+    scoring.total.cutoff.operator = 'gt';
+    const at7 = scoreAssessment({ questions: scared.questions, scoring }, buildPanic(7));
+    const at8 = scoreAssessment({ questions: scared.questions, scoring }, buildPanic(8));
+    assert.equal(sub(at7, 'panic_somatic').meetsCutoff, false);
+    assert.equal(sub(at8, 'panic_somatic').meetsCutoff, true);
+    assert.equal(scoreAssessment({ questions: scared.questions, scoring }, buildTotal(25)).total.meetsCutoff, false);
+    assert.equal(scoreAssessment({ questions: scared.questions, scoring }, buildTotal(26)).total.meetsCutoff, true);
+  });
+
+  test('an unsupported operator is rejected', () => {
+    const scoring = structuredClone(scared.assessment.scoring);
+    scoring.subscales[0].cutoff.operator = 'lte';
+    assert.throws(() => scoreAssessment({ questions: scared.questions, scoring }, buildPanic(7)));
   });
 });

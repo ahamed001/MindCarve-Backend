@@ -114,6 +114,7 @@ export const isaa = {
           name: 'Percentage of Disability as per the score',
           source: 'total',
           note: 'Transcribed from the source table. Scores below 70 are not listed in the source table.',
+          unmatchedLabel: 'Not specified in reference',
           bands: [
             { min: 70, max: 70, label: '40%', value: 40 },
             { min: 71, max: 88, label: '50%', value: 50 },

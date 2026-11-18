@@ -13,5 +13,4 @@ export const updateStatus = async (req, res) =>
 
 export const submission = async (req, res) => sendSuccess(res, await service.getSubmission(req.params.id));
 
-export const byAttemptCode = async (req, res) => sendSuccess(res, await service.findByAttemptCode(req.params.code));
 export const report = async (req, res) => sendSuccess(res, await service.getAttemptReport(req.params.id));

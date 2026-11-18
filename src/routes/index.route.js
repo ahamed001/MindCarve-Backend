@@ -9,6 +9,7 @@ import responseRoutes from '../responses/route/response.route.js';
 import dashboardRoutes from '../dashboard/route/dashboard.route.js';
 import reportRoutes from '../reports/route/report.route.js';
 import activityRoutes from '../activity/route/activity.route.js';
+import auditRoutes from '../audit/route/audit.route.js';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/me', authenticate, responseRoutes);
 router.use('/dashboard', authenticate, dashboardRoutes);
 router.use('/reports', authenticate, reportRoutes);
 router.use('/activity', authenticate, activityRoutes);
+router.use('/audit', authenticate, auditRoutes);
 
 export default router;

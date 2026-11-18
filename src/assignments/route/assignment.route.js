@@ -5,6 +5,9 @@ import { validate } from '../../middleware/validate.middleware.js';
 import { body, idParam, param, query } from '../../utils/validators.js';
 import { ASSIGNMENT_STATUS, ROLES } from '../../utils/constants.js';
 import * as c from '../controller/assignment.controller.js';
+import { audit } from '../../middleware/audit.middleware.js';
+
+const viewed = audit('result.viewed', (req, data) => ({ assignmentId: req.params.id, details: data?.assessment?.name || data?.version?.name }));
 
 const router = Router();
 const adminOnly = authorize(ROLES.ADMIN);
@@ -32,13 +35,7 @@ router.post(
   asyncHandler(c.create),
 );
 router.patch('/:id/status', adminOnly, validate([idParam(), body('status').isIn([ASSIGNMENT_STATUS.CANCELLED])]), asyncHandler(c.updateStatus));
-router.get(
-  '/attempt/:code',
-  staff,
-  validate([param('code').matches(/^att-\d+-\d+$/i).withMessage('Attempt ID looks like ATT-1-6')]),
-  asyncHandler(c.byAttemptCode),
-);
-router.get('/:id/report', staff, validate([idParam()]), asyncHandler(c.report));
-router.get('/:id/submission', staff, validate([idParam()]), asyncHandler(c.submission));
+router.get('/:id/report', staff, validate([idParam()]), viewed, asyncHandler(c.report));
+router.get('/:id/submission', staff, validate([idParam()]), viewed, asyncHandler(c.submission));
 
 export default router;
