@@ -20,6 +20,7 @@ router.post(
 );
 router.post('/logout', authenticate, asyncHandler(controller.logout));
 router.get('/me', authenticate, asyncHandler(controller.me));
+router.post('/socket-token', authenticate, asyncHandler(controller.socketToken));
 
 const declarationRule = (field) =>
   body(field)

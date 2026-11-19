@@ -864,3 +864,40 @@ describe('Admin-built questionnaire end to end', () => {
     assert.ok(!(await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items.some((x) => x.code === 'MIX-5'));
   });
 });
+
+describe('Socket pass (frontend on another domain)', () => {
+  test('a 60-second pass opens a live connection but is never accepted as an API login', async () => {
+    const http = await import('node:http');
+    const { initRealtime } = await import('../src/realtime/socket.js');
+    const { io: connect } = await import('socket.io-client');
+    const server = http.createServer(app);
+    const io = initRealtime(server);
+    await new Promise((r) => server.listen(0, r));
+    const url = `http://localhost:${server.address().port}`;
+    const open = (opts) =>
+      new Promise((resolve, reject) => {
+        const s = connect(url, { transports: ['websocket'], reconnection: false, ...opts });
+        s.on('connect', () => resolve(s));
+        s.on('connect_error', (e) => reject(e));
+      });
+    try {
+      assert.equal((await request(app).post('/api/auth/socket-token')).status, 401, 'needs a login');
+      const res = await request(app).post('/api/auth/socket-token').set('Cookie', adminCookie);
+      assert.equal(res.status, 200);
+      const { token } = res.body.data;
+
+      const s = await open({ auth: { token } });
+      assert.ok(s.connected, 'the pass opens a socket without any cookie');
+      s.close();
+
+      const asApiLogin = await request(app).get('/api/patients').set('Authorization', `Bearer ${token}`);
+      assert.equal(asApiLogin.status, 401, 'the pass is not an API login');
+
+      const sessionCookieToken = adminCookie.split('=')[1];
+      await assert.rejects(open({ auth: { token: sessionCookieToken } }), /unauthorized/, 'a normal login token is not accepted as a pass');
+    } finally {
+      io.close();
+      await new Promise((r) => server.close(r));
+    }
+  });
+});

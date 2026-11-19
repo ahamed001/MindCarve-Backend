@@ -10,7 +10,8 @@ export const createApp = () => {
   const app = express();
 
   app.disable('x-powered-by');
-  if (env.isProduction) app.set('trust proxy', 1);
+  // Number of proxies in front of the API (Render = 1; Vercel rewrite → Render = 2), so rate limits see the visitor's IP.
+  if (env.isProduction || process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
 
   app.use(helmet());
   app.use(

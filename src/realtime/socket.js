@@ -27,9 +27,13 @@ export const initRealtime = (httpServer) => {
 
   io.use(async (socket, next) => {
     try {
-      const token = readCookie(socket.handshake.headers.cookie, AUTH_COOKIE);
+      // Same site: the session cookie. Cross site (frontend proxies the API): a 60-second socket pass from /api/auth/socket-token.
+      const pass = socket.handshake.auth?.token;
+      const token = pass || readCookie(socket.handshake.headers.cookie, AUTH_COOKIE);
       if (!token) return next(new Error('unauthorized'));
       const payload = jwt.verify(token, env.jwtSecret);
+      if (pass && payload.purpose !== 'socket') return next(new Error('unauthorized'));
+      if (!pass && payload.purpose) return next(new Error('unauthorized'));
       const user = await User.findById(payload.sub).select('+tokenVersion role status patient');
       if (!user || user.status !== 'active' || user.tokenVersion !== payload.tv) return next(new Error('unauthorized'));
       socket.data.user = { id: String(user._id), role: user.role, patient: user.patient ? String(user.patient) : null };

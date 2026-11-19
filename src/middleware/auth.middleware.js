@@ -23,6 +23,9 @@ export const authenticate = async (req, res, next) => {
       throw ApiError.unauthorized('Session expired or invalid. Please sign in again.');
     }
 
+    // Socket passes only open live-update connections; they are never accepted as an API login.
+    if (payload.purpose) throw ApiError.unauthorized('Session expired or invalid. Please sign in again.');
+
     const user = await User.findById(payload.sub).select('+tokenVersion');
     if (!user || user.status !== 'active' || user.tokenVersion !== payload.tv) {
       throw ApiError.unauthorized('Session expired or invalid. Please sign in again.');

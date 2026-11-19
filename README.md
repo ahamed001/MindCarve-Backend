@@ -51,5 +51,7 @@ With the frontend on Vercel and this API on another host (Render, Railway…):
 
 - `NODE_ENV=production`
 - `CLIENT_URL=https://mind-carve-frontend.vercel.app`
-- `COOKIE_SAME_SITE=none` (the default in production) so the login cookie works across the two sites. It needs HTTPS, which these hosts provide.
+- `JWT_SECRET`: 32+ characters (the server refuses to start in production otherwise).
+- `TRUST_PROXY=2` when requests come through Vercel's `/api` rewrite and then Render, so rate limits see the visitor's real IP.
+- The frontend forwards `/api` through its own domain, so the login cookie is first-party. Live updates connect straight to this host using a 60-second socket pass from `POST /api/auth/socket-token`.
 - The host must support WebSockets for live updates. Render and Railway do; Vercel serverless functions don't.

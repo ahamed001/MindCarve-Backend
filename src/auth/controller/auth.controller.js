@@ -36,6 +36,8 @@ export const logout = async (req, res) => {
   sendSuccess(res, {}, 'Signed out successfully');
 };
 
+export const socketToken = async (req, res) => sendSuccess(res, { token: authService.signSocketToken(req.user) });
+
 export const me = async (req, res) => {
   sendSuccess(res, { user: await authService.getCurrentUser(req.user) });
 };

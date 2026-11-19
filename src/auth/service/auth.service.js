@@ -24,6 +24,14 @@ export const hashPassword = (password) => bcrypt.hash(cleanPassword(password), B
 
 export const signToken = (user) => jwt.sign({ sub: String(user._id), role: user.role, tv: user.tokenVersion ?? 0 }, env.jwtSecret, { expiresIn: env.jwtExpiresIn });
 
+/**
+ * A 60-second pass that only opens a live-updates (Socket.IO) connection. Used when the API is reached through
+ * the frontend's domain (Vercel rewrite) but the socket connects straight to the API host, where the session
+ * cookie isn't available. It carries the same session version, so signing out also invalidates it.
+ */
+export const signSocketToken = (user) =>
+  jwt.sign({ sub: String(user._id), tv: user.tokenVersion ?? 0, purpose: 'socket' }, env.jwtSecret, { expiresIn: '60s' });
+
 const buildSession = async (user) => {
   const fresh = await User.findById(user._id).select('+tokenVersion');
   let patient = null;
