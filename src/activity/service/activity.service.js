@@ -22,7 +22,7 @@ export const ACTIONS = Object.freeze({
   REPORT_GENERATED: 'system.report_generated',
 });
 
-export const logActivity = async ({ actor, action, category, message, entityType, entityId, patient, metadata, isDemo, createdAt }) => {
+export const logActivity = async ({ actor, action, category, message, entityType, entityId, patient, metadata, createdAt }) => {
   const doc = {
     actor: actor?._id || actor || undefined,
     actorName: actor?.name,
@@ -34,7 +34,6 @@ export const logActivity = async ({ actor, action, category, message, entityType
     entityId,
     patient: patient?._id || patient || undefined,
     metadata,
-    isDemo: Boolean(isDemo),
   };
   if (createdAt) doc.createdAt = createdAt;
   return ActivityLog.create(doc);

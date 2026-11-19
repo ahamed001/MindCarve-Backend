@@ -14,7 +14,6 @@ const activitySchema = new mongoose.Schema(
     entityId: mongoose.Schema.Types.ObjectId,
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     metadata: mongoose.Schema.Types.Mixed,
-    isDemo: { type: Boolean, default: false },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );

@@ -20,10 +20,10 @@ import { instruments } from './instruments/index.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
-const ensureStaff = async ({ name, email, password, role, isDemo = false }) => {
+const ensureStaff = async ({ name, email, password, role }) => {
   const existing = await User.findOne({ email });
   if (existing) return existing;
-  return User.create({ name, email, role, status: 'active', passwordHash: await hashPassword(password), isDemo });
+  return User.create({ name, email, role, status: 'active', passwordHash: await hashPassword(password) });
 };
 
 /**
@@ -84,7 +84,8 @@ export const seedInstruments = async (admin) => {
   return summary;
 };
 
-// --- Demonstration data (clearly flagged isDemo; fictional people only) ---------------------------
+// --- Demonstration data (fictional people only; recognised by their reserved @example.test emails) ---
+const DEMO_EMAIL = /@example\.test$/;
 
 const DEMO_PATIENTS = [
   { fullName: 'Demo Patient – Asha R.', dob: '1990-04-12', gender: 'female', codes: ['BEIS-10', 'BFI-10'] },
@@ -112,7 +113,7 @@ const answersFor = (version, rand, bias) =>
     });
 
 export const seedDemoData = async (admin, clinician) => {
-  if (await Patient.exists({ isDemo: true })) return ['Demo data already present (skipped)'];
+  if (await Patient.exists({ email: DEMO_EMAIL })) return ['Demo data already present (skipped)'];
   const rand = rng(42);
   const demoPassword = 'DemoPatient@1';
   const assessments = await Assessment.find({ code: { $in: instruments.map((i) => i.assessment.code) } });
@@ -128,7 +129,6 @@ export const seedDemoData = async (admin, clinician) => {
       role: ROLES.PATIENT,
       status: 'active',
       passwordHash: await hashPassword(demoPassword),
-      isDemo: true,
     });
     const patient = await Patient.create({
       patientCode: `ATH-${String(await nextSequence('patientCode')).padStart(4, '0')}`,
@@ -141,7 +141,6 @@ export const seedDemoData = async (admin, clinician) => {
       guardianName: p.guardianName,
       relevantInfo: 'Fictional demonstration record.',
       createdBy: admin._id,
-      isDemo: true,
       declaration: index === 2 ? { accepted: false } : { accepted: true, acceptedAt: registeredAt },
       lastActivityAt: registeredAt,
     });
@@ -155,12 +154,11 @@ export const seedDemoData = async (admin, clinician) => {
       entityType: 'Patient',
       entityId: patient._id,
       patient: patient._id,
-      isDemo: true,
       createdAt: registeredAt,
     });
 
     const ids = p.codes.map((code) => byCode.get(code)?._id).filter(Boolean);
-    const { created: assignments } = await assignAssessments(patient._id, ids, { dueDate: new Date(Date.now() + 7 * DAY) }, admin, { isDemo: true });
+    const { created: assignments } = await assignAssessments(patient._id, ids, { dueDate: new Date(Date.now() + 7 * DAY) }, admin);
 
     for (const [aIndex, assignment] of assignments.entries()) {
       // Leave the second assignment of every other patient pending / in progress for realism.
@@ -192,10 +190,9 @@ export const seedDemoData = async (admin, clinician) => {
           entityType: 'Assignment',
           entityId: assignment._id,
           patient: patient._id,
-          isDemo: true,
           createdAt: completedAt,
         });
-        await calculateResult(assignment._id, { actor: user, isDemo: true, calculatedAt: completedAt });
+        await calculateResult(assignment._id, { actor: user, calculatedAt: completedAt });
         await Patient.updateOne({ _id: patient._id }, { lastActivityAt: completedAt });
       } else if (index % 3 === 0) {
         const startedAt = new Date(Date.now() - 2 * 3600 * 1000);
@@ -216,7 +213,6 @@ export const seedDemoData = async (admin, clinician) => {
           entityType: 'Assignment',
           entityId: assignment._id,
           patient: patient._id,
-          isDemo: true,
           createdAt: startedAt,
         });
       }
@@ -225,9 +221,10 @@ export const seedDemoData = async (admin, clinician) => {
   }
 
   // Backdate the seeding "assigned" activity entries so the feed reads naturally.
-  await ActivityLog.updateMany({ isDemo: true, action: ACTIONS.ASSESSMENT_ASSIGNED }, [{ $set: { createdAt: { $subtract: ['$createdAt', 9 * DAY] } } }]);
+  const demoPatientIds = (await Patient.find({ email: DEMO_EMAIL }).select('_id').lean()).map((p) => p._id);
+  await ActivityLog.updateMany({ patient: { $in: demoPatientIds }, action: ACTIONS.ASSESSMENT_ASSIGNED }, [{ $set: { createdAt: { $subtract: ['$createdAt', 9 * DAY] } } }]);
 
-  const firstPatient = await Patient.findOne({ isDemo: true }).sort({ createdAt: 1 });
+  const firstPatient = await Patient.findOne({ email: DEMO_EMAIL }).sort({ createdAt: 1 });
   await logActivity({
     actor: clinician,
     action: ACTIONS.NOTE_ADDED,
@@ -236,7 +233,6 @@ export const seedDemoData = async (admin, clinician) => {
     entityType: 'Patient',
     entityId: firstPatient._id,
     patient: firstPatient._id,
-    isDemo: true,
     createdAt: new Date(Date.now() - 3 * 3600 * 1000),
   });
 
@@ -250,7 +246,7 @@ export const seedDevPatient = async (admin) => {
   const existing = await User.findOne({ email: email.toLowerCase() });
   if (existing) return [`Patient: ${email} (exists, left unchanged)`];
 
-  const user = await User.create({ name, email, role: ROLES.PATIENT, status: 'active', passwordHash: await hashPassword(password), isDemo: true });
+  const user = await User.create({ name, email, role: ROLES.PATIENT, status: 'active', passwordHash: await hashPassword(password) });
   const patient = await Patient.create({
     patientCode: `ATH-${String(await nextSequence('patientCode')).padStart(4, '0')}`,
     user: user._id,
@@ -264,7 +260,6 @@ export const seedDevPatient = async (admin) => {
     relevantInfo: 'Development test account.',
     declaration: { accepted: true, acceptedAt: new Date() },
     createdBy: admin._id,
-    isDemo: true,
     lastActivityAt: new Date(),
   });
   user.patient = patient._id;
@@ -287,7 +282,6 @@ export const runSeed = async ({ withDemo = false, withDevPatient = true } = {}) 
       email: 'clinician@athma.local',
       password: 'Clinician@123',
       role: ROLES.CLINICIAN,
-      isDemo: true,
     });
     lines.push(`Clinician (demo): ${clinician.email} / Clinician@123`);
     lines.push(...(await seedDemoData(admin, clinician)));

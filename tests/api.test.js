@@ -572,3 +572,65 @@ describe('Audit log', () => {
     await assert.rejects(AuditLog.deleteMany({}));
   });
 });
+
+describe('Sign-in robustness', () => {
+  test('a password copied with stray spaces still signs in; a wrong password does not', async () => {
+    const form = { fullName: 'Space Test', age: 40, phone: '9551238433', email: 'spaces@example.test', address: '1 Main Road', city: 'Chennai', state: 'Tamil Nadu', pincode: '600078', location: 'Adyar', password: 'Secret123', declarationAccepted: true };
+    const started = Date.now();
+    const reg = await request(app).post('/api/auth/register').send(form);
+    assert.equal(reg.status, 201, reg.body.message);
+    assert.ok(Date.now() - started < 3000, 'registration should not wait for email delivery');
+    const ok = await request(app).post('/api/auth/login').send({ email: 'spaces@example.test', password: '  Secret123 ', portal: 'patient' });
+    assert.equal(ok.status, 200);
+    const bad = await request(app).post('/api/auth/login').send({ email: 'spaces@example.test', password: 'Secret124', portal: 'patient' });
+    assert.equal(bad.status, 401);
+  });
+});
+
+describe('Password reset', () => {
+  test('reset link works once, new password signs in, old one does not, confirmation is audited', async () => {
+    const reg = await request(app).post('/api/auth/register').send({ fullName: 'Reset Test', age: 35, phone: '9551238433', email: 'reset@example.test', address: '1 Main Road', city: 'Chennai', state: 'Tamil Nadu', pincode: '600078', location: 'Adyar', password: 'OldPass123', declarationAccepted: true });
+    assert.equal(reg.status, 201);
+    const forgot = await request(app).post('/api/auth/password/forgot').send({ email: 'reset@example.test' });
+    assert.equal(forgot.status, 200);
+    const token = new URL(forgot.body.data.devLink).searchParams.get('token');
+
+    const reset = await request(app).post('/api/auth/password/reset').send({ token, password: 'NewPass456' });
+    assert.equal(reset.status, 200);
+    const again = await request(app).post('/api/auth/password/reset').send({ token, password: 'Another789' });
+    assert.equal(again.status, 400, 'reset links are single use');
+
+    const oldLogin = await request(app).post('/api/auth/login').send({ email: 'reset@example.test', password: 'OldPass123', portal: 'patient' });
+    assert.equal(oldLogin.status, 401);
+    const newLogin = await request(app).post('/api/auth/login').send({ email: 'reset@example.test', password: 'NewPass456', portal: 'patient' });
+    assert.equal(newLogin.status, 200);
+
+    await new Promise((r) => setTimeout(r, 200)); // confirmation email is sent in the background
+    const audit = await request(app).get('/api/audit').query({ search: 'Reset Test' }).set('Cookie', adminCookie);
+    assert.ok(audit.body.data.items.some((i) => i.action === 'email.password_changed_sent'));
+  });
+});
+
+describe('Per-click saves are kept', () => {
+  test('answers are stored on click (before Submit) and keep their own time after Submit', async () => {
+    const { Response } = await import('../src/responses/model/response.model.js');
+    const p = await onboard('clickstamp@example.test', []);
+    const quizzes = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items;
+    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${quizzes.find((q) => q.code === 'BEIS-10').assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+    const answers = Array.from({ length: 10 }, (_, i) => ({ itemId: String(i + 1), value: '3' }));
+
+    for (const a of answers) {
+      await request(app).put(`/api/me/assignments/${assignmentId}/responses`).set('Cookie', p.cookie).send({ answers: [a] });
+    }
+    const beforeSubmit = await Response.findOne({ assignment: assignmentId }).lean();
+    assert.equal(beforeSubmit.status, 'draft');
+    assert.equal(beforeSubmit.answers.length, 10, 'all answers are in the database before Submit');
+    const clickTimes = beforeSubmit.answers.map((a) => a.answeredAt.getTime());
+
+    await new Promise((r) => setTimeout(r, 30));
+    await request(app).post(`/api/me/assignments/${assignmentId}/submit`).set('Cookie', p.cookie).send({ answers });
+    const afterSubmit = await Response.findOne({ assignment: assignmentId }).lean();
+    assert.equal(afterSubmit.status, 'submitted');
+    assert.deepEqual(afterSubmit.answers.map((a) => a.answeredAt.getTime()), clickTimes, 'Submit does not re-stamp unchanged answers');
+  });
+});

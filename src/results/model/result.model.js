@@ -21,7 +21,6 @@ const resultSchema = new mongoose.Schema(
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: Date,
     calculatedAt: { type: Date, default: Date.now, index: true },
-    isDemo: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

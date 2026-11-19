@@ -14,7 +14,7 @@ import { ageInYears } from '../../utils/age.js';
 const ACTIVE = [ASSIGNMENT_STATUS.ASSIGNED, ASSIGNMENT_STATUS.IN_PROGRESS];
 
 /** Assigns the currently published version of each assessment. Skips assessments already active for the patient. */
-export const assignAssessments = async (patientId, assessmentIds, { dueDate, note } = {}, actor, { isDemo = false } = {}) => {
+export const assignAssessments = async (patientId, assessmentIds, { dueDate, note } = {}, actor) => {
   const patient = await Patient.findById(patientId);
   if (!patient) throw ApiError.notFound('Patient not found');
   if (patient.status !== 'active') throw ApiError.badRequest('Cannot assign assessments to an inactive patient');
@@ -42,7 +42,6 @@ export const assignAssessments = async (patientId, assessmentIds, { dueDate, not
       assignedBy: actor?._id,
       dueDate: dueDate || undefined,
       note,
-      isDemo,
     });
     created.push(assignment);
     await logActivity({
@@ -53,7 +52,6 @@ export const assignAssessments = async (patientId, assessmentIds, { dueDate, not
       entityType: 'Assignment',
       entityId: assignment._id,
       patient: patient._id,
-      isDemo,
     });
   }
   return { created, skipped };

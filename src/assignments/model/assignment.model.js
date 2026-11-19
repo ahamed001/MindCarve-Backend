@@ -14,7 +14,6 @@ const assignmentSchema = new mongoose.Schema(
     startedAt: Date,
     completedAt: { type: Date, index: true },
     note: { type: String, maxlength: 500 },
-    isDemo: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

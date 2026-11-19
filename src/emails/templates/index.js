@@ -36,6 +36,25 @@ export const welcomeEmail = ({ name, email, patientCode, password, link }) => ({
   }),
 });
 
+// Sent after a successful password reset: confirms the change and includes the new login details
+// (requested by the hospital). If the person did not make the change, they are told to contact the hospital.
+export const passwordChangedEmail = ({ name, email, password, link }) => ({
+  subject: 'Your Athma Mind Care password was changed',
+  text: `Hello ${name},\n\nYour password was reset successfully.\n\nYour login details:\n  Login email: ${email}\n  New password: ${password}\n\nLog in here: ${link}\n\nFor your security, all other sessions were signed out. Please keep this email private.\n\nIf you did not reset your password, contact Athma Mind Care Hospital immediately.`,
+  html: renderLayout({
+    heading: 'Your password was changed',
+    paragraphs: [
+      `Hello ${name}, your password was reset successfully.`,
+      `Login email: ${email}`,
+      `New password: ${password}`,
+      'For your security, all other sessions were signed out. Please keep this email private.',
+    ],
+    ctaLabel: 'Log in to Athma',
+    ctaUrl: link,
+    footnote: 'If you did not reset your password, contact Athma Mind Care Hospital immediately.',
+  }),
+});
+
 export const passwordResetEmail = ({ name, link, expiresMinutes }) => ({
   subject: 'Reset your Athma Mind Care password',
   text: `Hello ${name},\n\nWe received a request to reset your password. Use this link within ${expiresMinutes} minutes:\n${link}\n\nIf you did not request this, you can ignore this email.`,

@@ -103,7 +103,7 @@ export const createPatient = async (data, actor) => {
   const email = data.email.toLowerCase().trim();
   if (await User.exists({ email })) throw ApiError.conflict('An account with this email already exists');
 
-  const user = await User.create({ name: data.fullName, email, role: ROLES.PATIENT, status: 'invited', isDemo: Boolean(data.isDemo) });
+  const user = await User.create({ name: data.fullName, email, role: ROLES.PATIENT, status: 'invited' });
   let patient;
   try {
     const seq = await nextSequence('patientCode');
@@ -114,7 +114,6 @@ export const createPatient = async (data, actor) => {
       user: user._id,
       createdBy: actor._id,
       lastActivityAt: new Date(),
-      isDemo: Boolean(data.isDemo),
     });
     user.patient = patient._id;
     await user.save();

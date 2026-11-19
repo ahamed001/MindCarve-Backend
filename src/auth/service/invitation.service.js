@@ -1,7 +1,7 @@
 import { Invitation } from '../model/invitation.model.js';
 import { env } from '../../config/env.js';
 import { generateRawToken, hashToken } from '../../utils/tokens.js';
-import { sendEmail } from '../../emails/service/email.service.js';
+import { sendEmailInBackground, willDeliver } from '../../emails/service/email.service.js';
 import { invitationEmail, passwordResetEmail } from '../../emails/templates/index.js';
 import { ApiError } from '../../utils/ApiError.js';
 
@@ -46,24 +46,20 @@ export const issueToken = async ({ user, patient, purpose, createdBy }) => {
       ? invitationEmail({ name: user.name, link, expiresHours: env.invitationTtlHours })
       : passwordResetEmail({ name: user.name, link, expiresMinutes: env.resetTtlMinutes });
 
-  try {
-    const { status } = await sendEmail({ to: user.email, ...content });
-    invitation.emailStatus = status;
-    invitation.sentAt = new Date();
-  } catch (error) {
-    invitation.emailStatus = 'failed';
-    invitation.emailError = error.message;
-  }
-  await invitation.save();
+  // Send in the background so the request returns immediately; the outcome is saved on the token record.
+  const delivering = willDeliver(user.email);
+  sendEmailInBackground({ to: user.email, ...content }, (status, error) =>
+    Invitation.updateOne({ _id: invitation._id }, { emailStatus: status, sentAt: status === 'failed' ? undefined : new Date(), emailError: error?.message }).catch(() => {}),
+  );
 
   return {
     invitation: {
       id: invitation._id,
-      emailStatus: invitation.emailStatus,
+      emailStatus: delivering ? 'pending' : 'logged_dev',
       expiresAt: invitation.expiresAt,
-      sentAt: invitation.sentAt,
     },
-    devLink: env.isProduction ? undefined : link,
+    // Show the link on screen only in development AND only when no real email is being sent.
+    devLink: env.isProduction || delivering ? undefined : link,
   };
 };
 

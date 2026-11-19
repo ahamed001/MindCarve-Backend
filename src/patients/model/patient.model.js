@@ -31,7 +31,6 @@ const patientSchema = new mongoose.Schema(
     source: { type: String, enum: ['admin', 'self_registration'], default: 'admin' },
     lastActivityAt: Date,
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    isDemo: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

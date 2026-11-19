@@ -12,7 +12,6 @@ const userSchema = new mongoose.Schema(
     tokenVersion: { type: Number, default: 0, select: false },
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
     lastLoginAt: Date,
-    isDemo: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

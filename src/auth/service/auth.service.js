@@ -7,15 +7,19 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ROLES, STAFF_ROLES } from '../../utils/constants.js';
 import { findUsableToken, issueToken } from './invitation.service.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
-import { sendEmail } from '../../emails/service/email.service.js';
-import { welcomeEmail } from '../../emails/templates/index.js';
+import { sendEmailInBackground, willDeliver } from '../../emails/service/email.service.js';
+import { recordAudit } from '../../audit/service/audit.service.js';
+import { passwordChangedEmail, welcomeEmail } from '../../emails/templates/index.js';
 import { nextSequence } from '../../utils/counter.model.js';
 
 const BCRYPT_ROUNDS = 12;
 // Used to equalise response time when the email does not exist.
 const DUMMY_HASH = bcrypt.hashSync('timing-equaliser-not-a-password', BCRYPT_ROUNDS);
 
-export const hashPassword = (password) => bcrypt.hash(password, BCRYPT_ROUNDS);
+// Spaces at the start/end of a password are ignored everywhere (registration, reset, sign-in), so a
+// password copied from an email with a stray space still works.
+const cleanPassword = (password) => String(password ?? '').trim();
+export const hashPassword = (password) => bcrypt.hash(cleanPassword(password), BCRYPT_ROUNDS);
 
 export const signToken = (user) => jwt.sign({ sub: String(user._id), role: user.role, tv: user.tokenVersion ?? 0 }, env.jwtSecret, { expiresIn: env.jwtExpiresIn });
 
@@ -35,10 +39,10 @@ export const login = async ({ email, password, portal }) => {
 
   if (!user || !user.passwordHash) {
     // Equalise timing to reduce account enumeration.
-    await bcrypt.compare(String(password), DUMMY_HASH);
+    await bcrypt.compare(cleanPassword(password), DUMMY_HASH);
     throw genericError;
   }
-  const valid = await bcrypt.compare(String(password), user.passwordHash);
+  const valid = await bcrypt.compare(cleanPassword(password), user.passwordHash);
   if (!valid) throw genericError;
 
   const allowed = portal === 'patient' ? user.role === ROLES.PATIENT : STAFF_ROLES.includes(user.role);
@@ -101,7 +105,7 @@ const SELF_REGISTER_FIELDS = ['phone', 'gender', 'address', 'city', 'state', 'pi
 
 /**
  * Patient self-registration. The patient chooses their own password; the welcome email contains
- * the login email, Patient ID and a login link — never the password.
+ * the Patient ID, login email, password and a login link (sent in the background).
  */
 export const registerPatient = async (data) => {
   const email = String(data.email).toLowerCase().trim();
@@ -136,16 +140,21 @@ export const registerPatient = async (data) => {
   }
 
   const loginLink = `${env.clientUrl}/login?email=${encodeURIComponent(email)}`;
-  let emailStatus;
-  try {
-    ({ status: emailStatus } = await sendEmail({
-      to: email,
-      ...welcomeEmail({ name: patient.fullName, email, patientCode: patient.patientCode, password: data.password, link: loginLink }),
-    }));
-  } catch (error) {
-    emailStatus = 'failed';
-    if (!env.isTest) console.error('[register] welcome email failed', error.message);
-  }
+  // The welcome email is sent in the background so registration responds immediately (SMTP can take
+  // several seconds). Its outcome is written to the audit log when sending finishes.
+  const delivering = willDeliver(email);
+  sendEmailInBackground(
+    { to: email, ...welcomeEmail({ name: patient.fullName, email, patientCode: patient.patientCode, password: cleanPassword(data.password), link: loginLink }) },
+    (status, error) =>
+      recordAudit({
+        actor: user,
+        action: status === 'failed' ? 'email.welcome_failed' : 'email.welcome_sent',
+        outcome: status === 'failed' ? 'failure' : 'success',
+        patientId: patient._id,
+        details: status === 'failed' ? error?.message : status === 'sent' ? `Sent to ${email}` : 'Not sent (development / test address) — saved to dev-mail',
+      }),
+  );
+  const emailStatus = delivering ? 'sending' : 'logged_dev';
 
   await logActivity({
     actor: user,
@@ -161,7 +170,7 @@ export const registerPatient = async (data) => {
     patientCode: patient.patientCode,
     email,
     emailStatus,
-    ...(env.isProduction ? {} : { devLoginLink: loginLink }),
+    ...(env.isProduction || delivering ? {} : { devLoginLink: loginLink }),
   };
 };
 
@@ -181,4 +190,17 @@ export const resetPassword = async ({ token, password }) => {
   user.passwordHash = await hashPassword(password);
   user.tokenVersion += 1; // sign out every existing session
   await user.save();
+
+  // Confirmation email with the new login details, sent in the background; outcome recorded in the audit log.
+  const loginPath = user.role === ROLES.PATIENT ? '/login' : '/admin/login';
+  const link = `${env.clientUrl}${loginPath}?email=${encodeURIComponent(user.email)}`;
+  sendEmailInBackground({ to: user.email, ...passwordChangedEmail({ name: user.name, email: user.email, password: cleanPassword(password), link }) }, (status, error) =>
+    recordAudit({
+      actor: user,
+      action: status === 'failed' ? 'email.password_changed_failed' : 'email.password_changed_sent',
+      outcome: status === 'failed' ? 'failure' : 'success',
+      patientId: user.patient || undefined,
+      details: status === 'failed' ? error?.message : status === 'sent' ? `Sent to ${user.email}` : 'Not sent (development / test address) — saved to dev-mail',
+    }),
+  );
 };

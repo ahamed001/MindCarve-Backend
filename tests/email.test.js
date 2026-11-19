@@ -26,3 +26,13 @@ test('welcome email contains Patient ID, login email, password and login link', 
     assert.ok(mail.html.includes(part.replace('&', '&amp;')), `html missing ${part}`);
   }
 });
+
+test('password-changed email contains login email, new password and login link', async () => {
+  const { passwordChangedEmail } = await import('../src/emails/templates/index.js');
+  const mail = passwordChangedEmail({ name: 'Asha', email: 'asha@gmail.com', password: 'NewPass456', link: 'http://localhost:5173/login?email=asha%40gmail.com' });
+  assert.match(mail.subject, /password was changed/);
+  for (const part of ['asha@gmail.com', 'NewPass456', 'http://localhost:5173/login?email=asha%40gmail.com']) {
+    assert.ok(mail.text.includes(part), `text missing ${part}`);
+    assert.ok(mail.html.includes(part), `html missing ${part}`);
+  }
+});

@@ -7,7 +7,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
 
 /** Calculates (or recalculates) a result from the assignment's immutable version snapshot and stored answers. */
-export const calculateResult = async (assignmentId, { actor, isDemo = false, calculatedAt } = {}) => {
+export const calculateResult = async (assignmentId, { actor, calculatedAt } = {}) => {
   const assignment = await Assignment.findById(assignmentId).populate('patient', 'fullName').populate('assessment', 'code');
   if (!assignment) throw ApiError.notFound('Assignment not found');
   const response = await Response.findOne({ assignment: assignmentId, status: 'submitted' }).lean();
@@ -39,7 +39,6 @@ export const calculateResult = async (assignmentId, { actor, isDemo = false, cal
     itemScores: outcome.itemScores || null,
     notes: outcome.notes,
     calculatedAt: calculatedAt || new Date(),
-    isDemo,
   };
   if (!existing || existing.reviewStatus === 'none') doc.reviewStatus = reviewTriggered ? 'flagged' : 'none';
 
@@ -55,7 +54,6 @@ export const calculateResult = async (assignmentId, { actor, isDemo = false, cal
       entityId: result._id,
       patient: assignment.patient._id,
       metadata: { riskLevel: outcome.riskLevel, reviewTriggers: outcome.flags.filter((f) => f.type === 'review_trigger').length },
-      isDemo,
       createdAt: calculatedAt,
     });
   }

@@ -190,8 +190,17 @@ export const saveProgress = async (patientId, assignmentId, incoming, actor) => 
   // concurrently without overwriting each other. Only draft responses are ever modified.
   const draft = { assignment: assignment._id, status: 'draft' };
   const now = new Date();
+
+  // Answers already stored with the same value are left untouched, so each answer keeps the time it was
+  // actually chosen (the final Submit re-sends every answer as a safety net and must not re-stamp them).
+  const stored = await Response.findOne(draft).select('answers').lean();
+  const storedById = new Map((stored?.answers || []).map((x) => [x.itemId, x]));
+  const sameAnswer = (x, y) =>
+    Boolean(x && y) && (x.value ?? null) === (y.value ?? null) && (x.text ?? null) === (y.text ?? null) && [...(x.values || [])].sort().join('|') === [...(y.values || [])].sort().join('|');
+
   for (const a of answers) {
     const q = version.questions.find((x) => x.itemId === a.itemId);
+    if (isAnswered(q, a) && sameAnswer(storedById.get(a.itemId), a)) continue;
     let res;
     if (!isAnswered(q, a)) {
       res = await Response.updateOne(draft, { $pull: { answers: { itemId: a.itemId } }, $set: { lastSavedAt: now } });

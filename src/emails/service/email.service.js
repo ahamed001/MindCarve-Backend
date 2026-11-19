@@ -13,6 +13,9 @@ const isSmtpConfigured = () => Boolean(env.smtp.host && env.smtp.user && env.smt
 const RESERVED_DOMAIN = /@(?:[\w-]+\.)*(?:example\.(?:com|org|net|test)|example|test|invalid|localhost|local)$/i;
 export const isUndeliverableAddress = (to) => RESERVED_DOMAIN.test(String(to).trim());
 
+/** True when an email to this address would really be sent (SMTP configured, real address, not a test run). */
+export const willDeliver = (to) => !env.isTest && isSmtpConfigured() && !isUndeliverableAddress(to);
+
 const getTransporter = () => {
   if (!transporter) {
     transporter = nodemailer.createTransport({
@@ -20,6 +23,9 @@ const getTransporter = () => {
       port: env.smtp.port,
       secure: env.smtp.secure,
       auth: { user: env.smtp.user, pass: env.smtp.pass },
+      // Keep the SMTP connection open and reuse it, instead of a new TLS handshake + login per email.
+      pool: true,
+      maxConnections: 2,
     });
   }
   return transporter;
@@ -51,4 +57,18 @@ export const sendEmail = async ({ to, subject, html, text }) => {
     console.info(`[email:dev-fallback] Not sent (${isUndeliverableAddress(to) ? 'test address' : 'SMTP not configured'}). "${subject}" to ${to} saved to ${file}`);
   }
   return { status: 'logged_dev' };
+};
+
+/**
+ * Sends an email without making the caller wait (SMTP can take several seconds).
+ * `onDone(status, error)` runs when sending finishes, e.g. to record the outcome. Never throws.
+ */
+export const sendEmailInBackground = (message, onDone) => {
+  sendEmail(message)
+    .then(({ status }) => onDone?.(status, null))
+    .catch((error) => {
+      if (!env.isTest) console.error(`[email] sending "${message.subject}" to ${message.to} failed:`, error.message);
+      onDone?.('failed', error);
+    })
+    .catch(() => {});
 };
