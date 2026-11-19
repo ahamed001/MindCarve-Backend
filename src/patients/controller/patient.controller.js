@@ -11,7 +11,10 @@ export const create = async (req, res) =>
 
 export const detail = async (req, res) => sendSuccess(res, await patientService.getPatientDetail(req.params.id));
 
-export const update = async (req, res) => sendSuccess(res, await patientService.updatePatient(req.params.id, req.body, req.user), 'Patient updated');
+export const update = async (req, res) => {
+  const data = await patientService.updatePatient(req.params.id, req.body, req.user);
+  sendSuccess(res, data, data.emailChangedTo ? `Email changed. A new invitation was sent to ${data.emailChangedTo}; the old email can no longer be used.` : 'Patient updated');
+};
 
 export const setStatus = async (req, res) =>
   sendSuccess(res, await patientService.setPatientStatus(req.params.id, req.body.status, req.user), 'Patient status updated');

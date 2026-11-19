@@ -24,7 +24,18 @@ export const env = {
   useInMemoryDb: process.env.USE_IN_MEMORY_DB === 'true',
   jwtSecret: required('JWT_SECRET', isProduction ? undefined : 'dev-only-insecure-secret-change-me'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
-  clientUrl: process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173',
+  // Frontend address(es), comma-separated. All are allowed by CORS and Socket.IO; the FIRST one is used in email links.
+  // e.g. CLIENT_URL=https://mind-carve-frontend.vercel.app,http://localhost:5173
+  clientUrls: (process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173')
+    .split(',')
+    .map((u) => u.trim().replace(/\/+$/, ''))
+    .filter(Boolean),
+  get clientUrl() {
+    return this.clientUrls[0];
+  },
+  // Session cookie SameSite. Frontend and API on different sites (e.g. Vercel + Render) need "none" (sent only over HTTPS).
+  // Same site (localhost, or app.example.com + api.example.com) can use "lax". Defaults: production "none", development "lax".
+  cookieSameSite: (process.env.COOKIE_SAME_SITE || (isProduction ? 'none' : 'lax')).toLowerCase(),
   invitationTtlHours: Number(process.env.INVITATION_TTL_HOURS || 72),
   resetTtlMinutes: Number(process.env.RESET_TTL_MINUTES || 30),
   smtp: {

@@ -1,5 +1,6 @@
 import { ActivityLog } from '../model/activity.model.js';
 import { buildPageMeta, parsePagination } from '../../utils/pagination.js';
+import { emitToStaff } from '../../realtime/socket.js';
 
 export const ACTIONS = Object.freeze({
   PATIENT_REGISTERED: 'patient.registered',
@@ -36,7 +37,19 @@ export const logActivity = async ({ actor, action, category, message, entityType
     metadata,
   };
   if (createdAt) doc.createdAt = createdAt;
-  return ActivityLog.create(doc);
+  const entry = await ActivityLog.create(doc);
+  if (!createdAt) {
+    emitToStaff('activity:new', {
+      _id: String(entry._id),
+      action: entry.action,
+      category: entry.category,
+      message: entry.message,
+      actorName: entry.actorName,
+      patient: entry.patient ? String(entry.patient) : null,
+      createdAt: entry.createdAt,
+    });
+  }
+  return entry;
 };
 
 export const listActivity = async (query) => {

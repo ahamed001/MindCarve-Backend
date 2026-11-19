@@ -7,6 +7,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ROLES, STAFF_ROLES } from '../../utils/constants.js';
 import { findUsableToken, issueToken } from './invitation.service.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
+import { endLiveSessions } from '../../realtime/socket.js';
 import { sendEmailInBackground, willDeliver } from '../../emails/service/email.service.js';
 import { recordAudit } from '../../audit/service/audit.service.js';
 import { passwordChangedEmail, welcomeEmail } from '../../emails/templates/index.js';
@@ -62,6 +63,7 @@ export const login = async ({ email, password, portal }) => {
 /** Invalidates every token issued to this user. */
 export const logout = async (userId) => {
   await User.updateOne({ _id: userId }, { $inc: { tokenVersion: 1 } });
+  endLiveSessions(userId, 'signed_out'); // other open tabs of this account sign out too
 };
 
 export const getCurrentUser = async (user) => (await buildSession(user)).user;
@@ -109,7 +111,8 @@ const SELF_REGISTER_FIELDS = ['phone', 'gender', 'address', 'city', 'state', 'pi
  */
 export const registerPatient = async (data) => {
   const email = String(data.email).toLowerCase().trim();
-  if (await User.exists({ email })) throw ApiError.conflict('An account with this email already exists. Please sign in instead.');
+  // Also check patient profiles: a profile left behind after its login was deleted would otherwise get a twin.
+  if ((await User.exists({ email })) || (await Patient.exists({ email }))) throw ApiError.conflict('An account with this email already exists. Please sign in instead.');
 
   const user = await User.create({
     name: data.fullName.trim(),
@@ -190,6 +193,7 @@ export const resetPassword = async ({ token, password }) => {
   user.passwordHash = await hashPassword(password);
   user.tokenVersion += 1; // sign out every existing session
   await user.save();
+  endLiveSessions(user._id, 'password_changed');
 
   // Confirmation email with the new login details, sent in the background; outcome recorded in the audit log.
   const loginPath = user.role === ROLES.PATIENT ? '/login' : '/admin/login';

@@ -15,8 +15,9 @@ const linkFor = (purpose, rawToken) =>
  * Creates a single-use token (revoking older unused ones of the same purpose) and emails the link.
  * In non-production environments the raw link is returned as `devLink` for demonstration only.
  */
-export const issueToken = async ({ user, patient, purpose, createdBy }) => {
-  if (purpose === 'invitation') {
+export const issueToken = async ({ user, patient, purpose, createdBy, skipLimits = false }) => {
+  // skipLimits: used when staff correct a wrong email, so the new invitation goes out even right after the first one.
+  if (purpose === 'invitation' && !skipLimits) {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const recent = await Invitation.find({ user: user._id, purpose, createdAt: { $gte: since } }).sort({ createdAt: -1 });
     if (recent[0] && Date.now() - recent[0].createdAt.getTime() < RESEND_COOLDOWN_MS) {

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { authorize } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
-import { body, idParam, param, query } from '../../utils/validators.js';
+import { body, idParam, query } from '../../utils/validators.js';
 import { ASSIGNMENT_STATUS, ROLES } from '../../utils/constants.js';
 import * as c from '../controller/assignment.controller.js';
 import { audit } from '../../middleware/audit.middleware.js';

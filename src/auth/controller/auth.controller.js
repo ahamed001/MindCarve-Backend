@@ -4,10 +4,11 @@ import { sendSuccess } from '../../utils/response.js';
 import * as authService from '../service/auth.service.js';
 import { recordAudit } from '../../audit/service/audit.service.js';
 
+// HttpOnly: JavaScript can never read the token. "none" (cross-site) is only valid together with Secure (HTTPS).
 const cookieOptions = () => ({
   httpOnly: true,
-  secure: env.isProduction,
-  sameSite: env.isProduction ? 'strict' : 'lax',
+  secure: env.isProduction || env.cookieSameSite === 'none',
+  sameSite: env.cookieSameSite,
   path: '/',
   maxAge: 8 * 60 * 60 * 1000,
 });

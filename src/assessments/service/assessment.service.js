@@ -6,6 +6,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ASSESSMENT_STATUS } from '../../utils/constants.js';
 import { escapeRegex } from '../../utils/pagination.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
+import { emitToPatients } from '../../realtime/socket.js';
 
 export const toSnapshotQuestion = (q) => ({
   itemId: q.itemId,
@@ -86,6 +87,7 @@ export const archiveAssessment = async (id, actor) => {
   assessment.status = ASSESSMENT_STATUS.ARCHIVED;
   assessment.updatedBy = actor._id;
   await assessment.save();
+  emitToPatients('quizzes:changed', { assessment: String(assessment._id) });
   await logActivity({
     actor,
     action: ACTIONS.ASSESSMENT_ARCHIVED,
@@ -103,6 +105,7 @@ export const restoreAssessment = async (id, actor) => {
   assessment.status = assessment.publishedVersion ? ASSESSMENT_STATUS.PUBLISHED : ASSESSMENT_STATUS.DRAFT;
   assessment.updatedBy = actor._id;
   await assessment.save();
+  emitToPatients('quizzes:changed', { assessment: String(assessment._id) });
   return getAssessment(id);
 };
 
@@ -225,6 +228,7 @@ export const publishAssessment = async (id, actor) => {
   assessment.hasUnpublishedChanges = false;
   assessment.updatedBy = actor?._id;
   await assessment.save();
+  emitToPatients('quizzes:changed', { assessment: String(assessment._id) });
 
   if (actor) {
     await logActivity({

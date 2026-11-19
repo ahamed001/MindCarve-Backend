@@ -687,3 +687,180 @@ describe('Per-click saves are kept', () => {
     assert.deepEqual(afterSubmit.answers.map((a) => a.answeredAt.getTime()), clickTimes, 'Submit does not re-stamp unchanged answers');
   });
 });
+
+describe('Correcting a wrong email', () => {
+  test('old invitation stops working, a new one goes to the new email, the old password and sessions stop', async () => {
+    const { Invitation } = await import('../src/auth/model/invitation.model.js');
+    const { User } = await import('../src/users/model/user.model.js');
+    const created = await request(app)
+      .post('/api/patients')
+      .set('Cookie', adminCookie)
+      .send({ fullName: 'Typo Patient', email: 'wrongmail@example.test', phone: '+91 98765 43211', age: 40, address: '1 Main Road', city: 'Chennai', state: 'Tamil Nadu', pincode: '600001', location: 'Adyar' });
+    assert.equal(created.status, 201, created.body.message);
+    const patientId = created.body.data.patient._id;
+    const oldLink = created.body.data.devInviteLink;
+    const oldToken = oldLink && new URL(oldLink).searchParams.get('token');
+
+    const res = await request(app).put(`/api/patients/${patientId}`).set('Cookie', adminCookie).send({ email: 'rightmail@example.test' });
+    assert.equal(res.status, 200, res.body.message);
+    assert.equal(res.body.data.emailChangedTo, 'rightmail@example.test');
+    assert.match(res.body.message, /new invitation/);
+
+    const user = await User.findOne({ email: 'rightmail@example.test' });
+    assert.equal(user.status, 'invited');
+    assert.equal(await User.exists({ email: 'wrongmail@example.test' }), null);
+    const open = await Invitation.find({ user: user._id, purpose: 'invitation', usedAt: null, revokedAt: null });
+    assert.equal(open.length, 1, 'exactly one usable invitation: the new one');
+    if (oldToken) {
+      const accept = await request(app).post('/api/auth/invitations/accept').send({ token: oldToken, password: 'Patient123', declarationAccepted: true });
+      assert.equal(accept.status, 400, 'the link sent to the wrong email no longer works');
+    }
+    const patient = (await request(app).get(`/api/patients/${patientId}`).set('Cookie', adminCookie)).body.data.patient;
+    assert.equal(patient.declaration?.accepted, false);
+  });
+});
+
+describe('Robustness', () => {
+  test('starting the same quiz twice at once ends on one attempt', async () => {
+    const { Assignment } = await import('../src/assignments/model/assignment.model.js');
+    const p = await onboard('doubleclick@example.test', []);
+    const quiz = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items.find((x) => x.code === 'GDS-15');
+    const starts = await Promise.all([1, 2, 3].map(() => request(app).post(`/api/me/quizzes/${quiz.assessmentId}/start`).set('Cookie', p.cookie)));
+    const ids = new Set(starts.map((r) => r.body.data.assignmentId));
+    assert.equal(ids.size, 1, 'all clicks get the same attempt');
+    assert.equal(await Assignment.countDocuments({ patient: p.patient._id, assessment: quiz.assessmentId, status: { $in: ['assigned', 'in_progress'] } }), 1);
+  });
+
+  test('a patient profile whose login was deleted still opens and blocks a duplicate registration', async () => {
+    const { User } = await import('../src/users/model/user.model.js');
+    const p = await onboard('orphan@example.test', []);
+    await User.deleteOne({ email: 'orphan@example.test' });
+    const detail = await request(app).get(`/api/patients/${p.patient._id}`).set('Cookie', adminCookie);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.data.patient.accountStatus, 'no_login');
+    assert.equal((await request(app).post(`/api/patients/${p.patient._id}/invitation/resend`).set('Cookie', adminCookie)).status, 409);
+    const again = await request(app)
+      .post('/api/patients')
+      .set('Cookie', adminCookie)
+      .send({ fullName: 'Twin', email: 'orphan@example.test', phone: '+91 98765 43212', age: 30, address: '1 Road', city: 'Chennai', state: 'Tamil Nadu', pincode: '600001', location: 'Adyar' });
+    assert.equal(again.status, 409);
+  });
+});
+
+describe('Live updates (Socket.IO)', () => {
+  test('staff get live answer progress and activity; patients get session-ended; no cookie is refused', async () => {
+    const http = await import('node:http');
+    const { initRealtime } = await import('../src/realtime/socket.js');
+    const { io: connect } = await import('socket.io-client');
+    const server = http.createServer(app);
+    const io = initRealtime(server);
+    await new Promise((r) => server.listen(0, r));
+    const url = `http://localhost:${server.address().port}`;
+    const open = (cookie) =>
+      new Promise((resolve, reject) => {
+        const s = connect(url, { transports: ['websocket'], extraHeaders: cookie ? { Cookie: cookie } : {}, reconnection: false });
+        s.on('connect', () => resolve(s));
+        s.on('connect_error', (e) => reject(e));
+      });
+    const nextEvent = (socket, event, match = () => true) =>
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`no ${event}`)), 3000);
+        const h = (data) => {
+          if (!match(data)) return;
+          clearTimeout(t);
+          socket.off(event, h);
+          resolve(data);
+        };
+        socket.on(event, h);
+      });
+
+    try {
+      await assert.rejects(open(null), /unauthorized/, 'a socket without a login cookie is refused');
+
+      const staff = await open(adminCookie);
+      const p = await onboard('live@example.test', []);
+      const patientSocket = await open(p.cookie);
+      const quiz = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items.find((x) => x.code === 'GDS-15');
+      const { assignmentId } = (await request(app).post(`/api/me/quizzes/${quiz.assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+
+      const progress = nextEvent(staff, 'quiz:progress', (d) => d.assignment === String(assignmentId));
+      const started = nextEvent(staff, 'activity:new', (d) => d.action === 'assessment.started');
+      await request(app).put(`/api/me/assignments/${assignmentId}/responses`).set('Cookie', p.cookie).send({ answers: [{ itemId: '1', value: 'yes' }] });
+      assert.equal((await progress).answeredCount, 1);
+      assert.equal((await started).patient, String(p.patient._id));
+
+      const ended = nextEvent(patientSocket, 'session:ended');
+      await request(app).patch(`/api/patients/${p.patient._id}/status`).set('Cookie', adminCookie).send({ status: 'inactive' });
+      assert.equal((await ended).reason, 'deactivated');
+      staff.close();
+    } finally {
+      io.close();
+      await new Promise((r) => server.close(r));
+    }
+  });
+});
+
+describe('Admin-built questionnaire end to end', () => {
+  test('a new questionnaire (all question types) can be answered, scored, reported, printed and exported', async () => {
+    const post = (path, body) => request(app).post(path).set('Cookie', adminCookie).send(body);
+    const created = await post('/api/assessments', { code: 'MIX-5', name: 'Mixed types', primaryQuestionType: 'yes_no' });
+    const id = created.body.data._id;
+    const qs = [
+      { text: 'Yes or no?', type: 'yes_no', options: [{ label: 'Yes', value: 'yes', score: 1 }, { label: 'No', value: 'no', score: 0 }] },
+      { text: 'Likert?', type: 'rating_scale', options: ['SD', 'D', 'N', 'A', 'SA'].map((label, i) => ({ label, value: String(i + 1), score: i + 1 })) },
+      { text: 'Pick some', type: 'multiple_choice', options: [{ label: 'A', value: '1', score: 1 }, { label: 'B', value: '2', score: 2 }, { label: 'C', value: '3', score: 3 }] },
+      { text: 'How often?', type: 'frequency_scale', options: ['Never', 'Sometimes', 'Often'].map((label, i) => ({ label, value: String(i), score: i })) },
+      { text: 'Tell us more', type: 'text', required: false },
+    ];
+    for (const q of qs) assert.equal((await post(`/api/assessments/${id}/questions`, q)).status, 201);
+    const pub = await post(`/api/assessments/${id}/publish`);
+    assert.equal(pub.status, 200, pub.body.message);
+
+    const p = await onboard('mixed@example.test', []);
+    const quiz = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items.find((x) => x.code === 'MIX-5');
+    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${quiz.assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+    const answers = [
+      { itemId: '1', value: 'yes' },
+      { itemId: '2', value: '4' },
+      { itemId: '3', values: ['1', '3'] },
+      { itemId: '4', value: '2' },
+      { itemId: '5', text: 'Sleeping badly' },
+    ];
+    const sub = await request(app).post(`/api/me/assignments/${assignmentId}/submit`).set('Cookie', p.cookie).send({ answers });
+    assert.equal(sub.status, 200, sub.body.message);
+
+    const report = await request(app).get(`/api/assignments/${assignmentId}/report`).set('Cookie', adminCookie);
+    assert.equal(report.status, 200, report.body.message);
+    assert.equal(report.body.data.score.total.score, 1 + 4 + (1 + 3) + 2, 'sum of option scores; multiple choice adds each selected option');
+
+    const printed = await request(app).get(`/api/patients/${p.patient._id}/report`).set('Cookie', adminCookie);
+    assert.equal(printed.status, 200, printed.body.message);
+
+    const submission = await request(app).get(`/api/assignments/${assignmentId}/submission`).set('Cookie', adminCookie);
+    assert.equal(submission.status, 200, submission.body.message);
+
+    const { REPORT_TYPES } = await import('../src/reports/model/report.model.js');
+    const month = new Date().toISOString().slice(0, 7);
+    for (const type of REPORT_TYPES) {
+      const gen = await post('/api/reports', { type, month });
+      assert.ok([200, 201, 202].includes(gen.status), `${type}: ${gen.body.message}`);
+      let report;
+      for (let i = 0; i < 50; i += 1) {
+        report = (await request(app).get(`/api/reports/${gen.body.data._id}`).set('Cookie', adminCookie)).body.data;
+        if (report.status !== 'generating' && report.status !== 'queued' && report.status !== 'pending') break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.equal(report.status, 'ready', `${type}: ${report.error || report.status}`);
+      const dl = await request(app).get(`/api/reports/${report._id}/download`).set('Cookie', adminCookie);
+      assert.equal(dl.status, 200, `${type} download`);
+    }
+    await post(`/api/assessments/${id}/archive`);
+    // Archiving hides it from patients but keeps the completed result on the patient page and printed report.
+    const after = (await request(app).get(`/api/patients/${p.patient._id}`).set('Cookie', adminCookie)).body.data;
+    const row = after.assessments.find((r) => r.code === 'MIX-5');
+    assert.ok(row && row.state === 'completed' && row.archived, 'archived questionnaire result is still listed');
+    const print = (await request(app).get(`/api/patients/${p.patient._id}/report`).set('Cookie', adminCookie)).body.data;
+    assert.ok(print.sections.some((x) => x.assessment.code === 'MIX-5'), 'and is in the printed report');
+    assert.ok(!(await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items.some((x) => x.code === 'MIX-5'));
+  });
+});

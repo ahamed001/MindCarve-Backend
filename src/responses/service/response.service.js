@@ -8,6 +8,7 @@ import { Assessment } from '../../assessments/model/assessment.model.js';
 import { isAnswered, rawScoreFor } from '../../scoring/scoringEngine.js';
 import { calculateResult } from '../../results/service/result.service.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
+import { emitToStaff } from '../../realtime/socket.js';
 import { touchPatient } from '../../patients/service/patient.service.js';
 
 const OPEN = [ASSIGNMENT_STATUS.ASSIGNED, ASSIGNMENT_STATUS.IN_PROGRESS];
@@ -82,9 +83,10 @@ export const listMyQuizzes = async (patientId) => {
 export const startQuiz = async (patientId, assessmentId, actor) => {
   const assessment = await Assessment.findOne({ _id: assessmentId, status: ASSESSMENT_STATUS.PUBLISHED });
   if (!assessment?.publishedVersion) throw ApiError.notFound('Assessment not found');
-  const open = await Assignment.findOne({ patient: patientId, assessment: assessment._id, status: { $in: OPEN } }).sort({ assignedAt: -1 });
+  const openFilter = { patient: patientId, assessment: assessment._id, status: { $in: OPEN } };
+  const open = await Assignment.findOne(openFilter).sort({ _id: 1 });
   if (open) return { assignmentId: open._id };
-  const assignment = await Assignment.create({
+  await Assignment.create({
     patient: patientId,
     assessment: assessment._id,
     assessmentVersion: assessment.publishedVersion,
@@ -92,7 +94,17 @@ export const startQuiz = async (patientId, assessmentId, actor) => {
     assignedBy: actor._id,
     note: 'Started by the patient',
   });
-  return { assignmentId: assignment._id };
+  // Two clicks / two tabs at the same moment could each create an attempt. Every request keeps the oldest
+  // open attempt and removes the extra empty ones, so they all end up on the same single attempt.
+  const all = await Assignment.find(openFilter).sort({ _id: 1 }).select('_id').lean();
+  const [keep, ...extra] = all;
+  if (extra.length) {
+    const ids = extra.map((a) => a._id);
+    const withAnswers = await Response.distinct('assignment', { assignment: { $in: ids } });
+    const removable = ids.filter((id) => !withAnswers.some((w) => String(w) === String(id)));
+    if (removable.length) await Assignment.deleteMany({ _id: { $in: removable } });
+  }
+  return { assignmentId: keep._id };
 };
 
 export const listMyAssignments = async (patientId) => {
@@ -235,6 +247,14 @@ export const saveProgress = async (patientId, assignmentId, incoming, actor) => 
     }
   }
   await touchPatient(patientId);
+  // Staff watching this patient see answers arrive as they are clicked (ids and counts only).
+  emitToStaff('quiz:progress', {
+    patient: String(patientId),
+    assignment: String(assignment._id),
+    answeredCount: response.answers.length,
+    questionCount: version.questions.length,
+    lastSavedAt: response.lastSavedAt,
+  });
   return { answeredCount: response.answers.length, lastSavedAt: response.lastSavedAt };
 };
 

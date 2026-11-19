@@ -1,6 +1,8 @@
 import { env } from './config/env.js';
 import { connectDatabase } from './config/db.js';
+import http from 'node:http';
 import { createApp } from './app.js';
+import { initRealtime } from './realtime/socket.js';
 import { User } from './users/model/user.model.js';
 import { runSeed, syncSeedInstruments } from './seed/seed.js';
 
@@ -18,7 +20,9 @@ const start = async () => {
   }
 
   const app = createApp();
-  app.listen(env.port, () => {
+  const server = http.createServer(app);
+  initRealtime(server);
+  server.listen(env.port, () => {
     console.info(`[server] Athma API listening on http://localhost:${env.port}/api (${env.nodeEnv}${inMemory ? ', local dev DB' : ''})`);
   });
 };

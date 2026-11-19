@@ -1,4 +1,5 @@
 import { Patient } from '../model/patient.model.js';
+import { Invitation } from '../../auth/model/invitation.model.js';
 import { ageInYears } from '../../utils/age.js';
 import { Assessment } from '../../assessments/model/assessment.model.js';
 import { User } from '../../users/model/user.model.js';
@@ -12,6 +13,7 @@ import { buildPageMeta, escapeRegex, parsePagination } from '../../utils/paginat
 import { issueToken, latestInvitationFor } from '../../auth/service/invitation.service.js';
 import { assignAssessments, getAttemptReport, getPatientAssignments } from '../../assignments/service/assignment.service.js';
 import { ACTIONS, logActivity } from '../../activity/service/activity.service.js';
+import { endLiveSessions } from '../../realtime/socket.js';
 
 export { ageInYears } from '../../utils/age.js';
 
@@ -101,7 +103,7 @@ export const listPatients = async (query) => {
 
 export const createPatient = async (data, actor) => {
   const email = data.email.toLowerCase().trim();
-  if (await User.exists({ email })) throw ApiError.conflict('An account with this email already exists');
+  if ((await User.exists({ email })) || (await Patient.exists({ email }))) throw ApiError.conflict('An account with this email already exists');
 
   const user = await User.create({ name: data.fullName, email, role: ROLES.PATIENT, status: 'invited' });
   let patient;
@@ -199,9 +201,19 @@ export const getPatientDetail = async (id) => {
     getPatientAssignments(id),
     ClinicianNote.find({ patient: id }).sort({ createdAt: -1 }).populate('author', 'name role').lean(),
     ActivityLog.find({ patient: id }).sort({ createdAt: -1 }).limit(25).lean(),
-    latestInvitationFor(patient.user._id),
-    Assessment.find({ status: ASSESSMENT_STATUS.PUBLISHED }).sort({ displayOrder: 1, name: 1 }).select('code name').lean(),
+    // A profile whose login was deleted directly in the database has no user; don't crash or match another invite.
+    patient.user ? latestInvitationFor(patient.user._id) : null,
+    Assessment.find({ status: ASSESSMENT_STATUS.PUBLISHED }).sort({ displayOrder: 1, name: 1 }).select('code name status displayOrder').lean(),
   ]);
+
+  // Archived questionnaires are hidden from patients, but results already given for them stay visible here
+  // (and in the printed report): add any non-published questionnaire this patient has an attempt for.
+  const shownIds = new Set(published.map((a) => String(a._id)));
+  const extraIds = [...new Set(assignments.filter((a) => a.status !== ASSIGNMENT_STATUS.CANCELLED && a.assessment?._id && !shownIds.has(String(a.assessment._id))).map((a) => String(a.assessment._id)))];
+  if (extraIds.length) {
+    published.push(...(await Assessment.find({ _id: { $in: extraIds } }).select('code name status displayOrder').lean()));
+    published.sort((a, b) => (a.displayOrder ?? 100) - (b.displayOrder ?? 100) || a.name.localeCompare(b.name));
+  }
 
   // One row per published assessment: the open attempt if there is one, otherwise the latest completed one.
   const active = assignments.filter((a) => a.status !== ASSIGNMENT_STATUS.CANCELLED);
@@ -209,10 +221,10 @@ export const getPatientDetail = async (id) => {
     const mine = active.filter((a) => String(a.assessment?._id) === String(assessment._id));
     const attempt = mine.find((a) => a.status !== ASSIGNMENT_STATUS.COMPLETED) || mine.find((a) => a.status === ASSIGNMENT_STATUS.COMPLETED) || null;
     const state = !attempt ? 'not_started' : attempt.status === ASSIGNMENT_STATUS.COMPLETED ? 'completed' : attempt.progress.answeredCount > 0 ? 'in_progress' : 'not_started';
-    return { assessmentId: assessment._id, code: assessment.code, name: assessment.name, state, attempt };
+    return { assessmentId: assessment._id, code: assessment.code, name: assessment.name, state, attempt, archived: assessment.status === ASSESSMENT_STATUS.ARCHIVED };
   });
   return {
-    patient: { ...patient, ageYears: ageInYears(patient), accountStatus: patient.user?.status, lastLoginAt: patient.user?.lastLoginAt },
+    patient: { ...patient, ageYears: ageInYears(patient), accountStatus: patient.user?.status || 'no_login', lastLoginAt: patient.user?.lastLoginAt },
     invitation: invitation
       ? { emailStatus: invitation.emailStatus, sentAt: invitation.sentAt, expiresAt: invitation.expiresAt, usedAt: invitation.usedAt, revokedAt: invitation.revokedAt }
       : null,
@@ -230,14 +242,54 @@ export const updatePatient = async (id, data, actor) => {
     if (data[f] !== undefined) patient[f] = data[f];
   });
 
-  if (data.email && data.email.toLowerCase() !== patient.email) {
-    const email = data.email.toLowerCase().trim();
-    if (await User.exists({ email, _id: { $ne: patient.user } })) throw ApiError.conflict('An account with this email already exists');
-    patient.email = email;
-    await User.updateOne({ _id: patient.user }, { email });
+  /**
+   * Changing the email (e.g. fixing a typo) moves the account to the new address and cuts off the old one:
+   *  - every link already sent (invitation / password reset) stops working,
+   *  - any signed-in session is ended and the old password stops working,
+   *  - the declaration goes back to pending, because the person at the new address must agree to it themselves,
+   *  - a fresh invitation is emailed to the new address so the patient sets their own password.
+   * Answers, results and notes stay with the patient.
+   */
+  let emailChange = null;
+  const newEmail = data.email?.toLowerCase().trim();
+  if (newEmail && newEmail !== patient.email) {
+    if ((await User.exists({ email: newEmail, _id: { $ne: patient.user } })) || (await Patient.exists({ email: newEmail, _id: { $ne: patient._id } }))) {
+      throw ApiError.conflict('An account with this email already exists');
+    }
+    const user = await User.findById(patient.user).select('+tokenVersion +passwordHash');
+    if (!user) throw ApiError.conflict('This patient has no login account (it was removed from the database).');
+    await Invitation.updateMany({ user: user._id, usedAt: null, revokedAt: null }, { revokedAt: new Date() });
+    emailChange = { from: patient.email, to: newEmail };
+    patient.email = newEmail;
+    patient.declaration = { accepted: false };
+    user.email = newEmail;
+    user.passwordHash = undefined;
+    user.tokenVersion += 1;
+    if (user.status !== 'disabled') user.status = 'invited';
+    await user.save();
+    endLiveSessions(user._id, 'email_changed');
   }
   await patient.save();
   if (data.fullName) await User.updateOne({ _id: patient.user }, { name: patient.fullName });
+
+  if (emailChange) {
+    const user = await User.findById(patient.user);
+    let invited = false;
+    if (patient.status === 'active' && user.status === 'invited') {
+      await issueToken({ user, patient, purpose: 'invitation', createdBy: actor, skipLimits: true });
+      invited = true;
+    }
+    await logActivity({
+      actor,
+      action: ACTIONS.PATIENT_UPDATED,
+      category: 'patient',
+      message: `${actor.name} changed ${patient.fullName}'s email${invited ? ' and sent a new invitation' : ''}`,
+      entityType: 'Patient',
+      entityId: patient._id,
+      patient: patient._id,
+      metadata: emailChange,
+    });
+  }
 
   await logActivity({
     actor,
@@ -248,14 +300,16 @@ export const updatePatient = async (id, data, actor) => {
     entityId: patient._id,
     patient: patient._id,
   });
-  return getPatientDetail(id);
+  const detail = await getPatientDetail(id);
+  return emailChange ? { ...detail, emailChangedTo: emailChange.to } : detail;
 };
 
 export const setPatientStatus = async (id, status, actor) => {
   const patient = await getPatientOr404(id);
+  const user = await User.findById(patient.user).select('+tokenVersion +passwordHash');
+  if (!user) throw ApiError.conflict('This patient has no login account (it was removed from the database).');
   patient.status = status;
   await patient.save();
-  const user = await User.findById(patient.user).select('+tokenVersion +passwordHash');
   if (status === 'inactive') {
     user.tokenVersion += 1; // end any active sessions
     user.status = 'disabled';
@@ -263,6 +317,7 @@ export const setPatientStatus = async (id, status, actor) => {
     user.status = user.passwordHash ? 'active' : 'invited';
   }
   await user.save();
+  if (status === 'inactive') endLiveSessions(user._id, 'deactivated');
 
   await logActivity({
     actor,
@@ -279,6 +334,7 @@ export const setPatientStatus = async (id, status, actor) => {
 export const resendInvitation = async (id, actor) => {
   const patient = await getPatientOr404(id);
   const user = await User.findById(patient.user);
+  if (!user) throw ApiError.conflict('This patient has no login account (it was removed from the database).');
   if (user.status !== 'invited') throw ApiError.badRequest('This patient has already set up their account');
   if (patient.status !== 'active') throw ApiError.badRequest('Reactivate the patient before resending an invitation');
   const { invitation, devLink } = await issueToken({ user, patient, purpose: 'invitation', createdBy: actor });
