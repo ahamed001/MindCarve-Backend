@@ -28,6 +28,84 @@ export const findAssessmentOr404 = async (id) => {
   return assessment;
 };
 
+/** Any edit marks the draft as changed; patients keep using the live version until the next Publish. */
+export const markChanged = (assessmentId, actor) => Assessment.updateOne({ _id: assessmentId }, { hasUnpublishedChanges: true, updatedBy: actor?._id });
+
+export const ensureEditable = (assessment) => {
+  if (assessment.status === ASSESSMENT_STATUS.ARCHIVED) throw ApiError.badRequest('Restore this assessment before editing it');
+};
+
+const DETAIL_FIELDS = ['name', 'category', 'description', 'instructions', 'respondent', 'timeframe', 'primaryQuestionType'];
+
+/** New assessments start as a draft (invisible to patients) with a simple total score (sum of option scores). */
+export const createAssessment = async (data, actor) => {
+  const assessment = await Assessment.create({
+    ...Object.fromEntries(DETAIL_FIELDS.filter((f) => data[f] !== undefined).map((f) => [f, data[f]])),
+    code: data.code,
+    status: ASSESSMENT_STATUS.DRAFT,
+    hasUnpublishedChanges: true,
+    scoring: { enabled: true, status: 'configured', total: { enabled: true, method: 'sum', label: 'Total score', bands: [] }, subscales: [], outputs: [] },
+    createdBy: actor._id,
+    updatedBy: actor._id,
+  });
+  await logActivity({
+    actor,
+    action: ACTIONS.ASSESSMENT_CREATED,
+    category: 'content',
+    message: `${actor.name} created assessment ${assessment.code}`,
+    entityType: 'Assessment',
+    entityId: assessment._id,
+  });
+  return getAssessment(assessment._id);
+};
+
+/** Edits name, description, instructions… (not questions). Takes effect for patients after Publish. */
+export const updateAssessment = async (id, data, actor) => {
+  const assessment = await findAssessmentOr404(id);
+  ensureEditable(assessment);
+  DETAIL_FIELDS.forEach((f) => {
+    if (data[f] !== undefined) assessment[f] = data[f];
+  });
+  assessment.hasUnpublishedChanges = true;
+  assessment.updatedBy = actor._id;
+  await assessment.save();
+  await logActivity({
+    actor,
+    action: ACTIONS.ASSESSMENT_UPDATED,
+    category: 'content',
+    message: `${actor.name} updated ${assessment.code} details`,
+    entityType: 'Assessment',
+    entityId: assessment._id,
+  });
+  return getAssessment(id);
+};
+
+/** Archived assessments disappear from patients' "Take a Quiz" list; attempts and results are kept. */
+export const archiveAssessment = async (id, actor) => {
+  const assessment = await findAssessmentOr404(id);
+  assessment.status = ASSESSMENT_STATUS.ARCHIVED;
+  assessment.updatedBy = actor._id;
+  await assessment.save();
+  await logActivity({
+    actor,
+    action: ACTIONS.ASSESSMENT_ARCHIVED,
+    category: 'content',
+    message: `${actor.name} archived ${assessment.code}`,
+    entityType: 'Assessment',
+    entityId: assessment._id,
+  });
+  return getAssessment(id);
+};
+
+export const restoreAssessment = async (id, actor) => {
+  const assessment = await findAssessmentOr404(id);
+  if (assessment.status !== ASSESSMENT_STATUS.ARCHIVED) throw ApiError.badRequest('Assessment is not archived');
+  assessment.status = assessment.publishedVersion ? ASSESSMENT_STATUS.PUBLISHED : ASSESSMENT_STATUS.DRAFT;
+  assessment.updatedBy = actor._id;
+  await assessment.save();
+  return getAssessment(id);
+};
+
 /** Validates that a scoring configuration only references real questions and is internally consistent. */
 export const validateScoring = (scoring, questions) => {
   const errors = [];
@@ -107,10 +185,14 @@ export const getAssessment = async (id) => {
   return { ...assessment, questions, versions, assignmentCount };
 };
 
-/** Publishing creates a new immutable version snapshot used by all future assignments (used internally by the seed). */
+/**
+ * Publishing freezes the current draft as a new immutable version (v1, v2, …) used by all NEW attempts.
+ * Attempts already started or completed keep the version they began with.
+ */
 export const publishAssessment = async (id, actor) => {
   const assessment = await findAssessmentOr404(id);
   if (assessment.status === ASSESSMENT_STATUS.ARCHIVED) throw ApiError.badRequest('Restore this assessment before publishing it');
+  if (assessment.publishedVersion && !assessment.hasUnpublishedChanges) throw ApiError.badRequest('There are no changes to publish');
 
   const questions = await Question.find({ assessment: id }).sort({ order: 1 }).lean();
   if (!questions.length) throw ApiError.badRequest('Add at least one question before publishing');

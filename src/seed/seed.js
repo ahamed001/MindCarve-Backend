@@ -53,6 +53,7 @@ export const syncSeedScoring = async (existing, definition) => {
   existing.scoring = definition.scoring;
   existing.sourceNotes = definition.sourceNotes;
   existing.discrepancies = definition.discrepancies;
+  existing.hasUnpublishedChanges = true;
   await existing.save();
   const updated = await publishAssessment(existing._id, null);
   return `scoring configuration updated — published as v${updated.currentVersion}`;

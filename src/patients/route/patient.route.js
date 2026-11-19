@@ -22,20 +22,27 @@ const dobRule = (optional) => {
     .withMessage('Date of birth must be in the past');
 };
 
-const profileRules = (optional) => [
-  (optional ? body('fullName').optional() : body('fullName')).isString().trim().isLength({ min: 2, max: 120 }).withMessage('Full name is required (2–120 characters)'),
-  body('phone').optional({ values: 'falsy' }).matches(/^[+\d][\d\s-]{6,18}$/).withMessage('Enter a valid phone number'),
-  dobRule(true),
-  body('age').optional({ values: 'falsy' }).isInt({ min: 0, max: 120 }).withMessage('Age must be 0–120'),
-  body('gender').optional().isIn(['female', 'male', 'other', 'prefer_not_to_say', '']).withMessage('Invalid gender'),
-  body('guardianName').optional().isString().isLength({ max: 120 }),
-  body('relevantInfo').optional().isString().isLength({ max: 2000 }),
-  body('address').optional().isString().isLength({ max: 500 }),
-  body(['city', 'state']).optional().isString().isLength({ max: 80 }),
-  body('pincode').optional({ values: 'falsy' }).matches(/^\d{6}$/).withMessage('Pincode must be 6 digits'),
-  body(['location', 'education', 'occupation', 'referredBy']).optional().isString().isLength({ max: 120 }),
-  body('maritalStatus').optional().isIn(['', 'single', 'married', 'divorced', 'widowed', 'separated', 'prefer_not_to_say']),
-];
+// Staff registration requires the same fields as the patient's own Register page.
+// When editing (optional = true) a field may be left out, but a sent value must still be valid (not blank).
+const profileRules = (optional) => {
+  const field = (name) => (optional ? body(name).optional() : body(name));
+  return [
+    field('fullName').isString().trim().isLength({ min: 2, max: 120 }).withMessage('Full name is required (2–120 characters)'),
+    field('phone').matches(/^[+\d][\d\s-]{6,18}$/).withMessage('Enter a valid phone number'),
+    dobRule(true),
+    field('age').isInt({ min: 1, max: 120 }).withMessage('Age is required (1–120)'),
+    body('gender').optional().isIn(['female', 'male', 'other', 'prefer_not_to_say', '']).withMessage('Invalid gender'),
+    body('guardianName').optional().isString().isLength({ max: 120 }),
+    body('relevantInfo').optional().isString().isLength({ max: 2000 }),
+    field('address').isString().trim().isLength({ min: 3, max: 500 }).withMessage('Full address is required'),
+    field('city').isString().trim().isLength({ min: 2, max: 80 }).withMessage('City is required'),
+    field('state').isString().trim().isLength({ min: 2, max: 80 }).withMessage('State is required'),
+    field('pincode').matches(/^\d{6}$/).withMessage('Pincode must be 6 digits'),
+    field('location').isString().trim().isLength({ min: 2, max: 120 }).withMessage('Location is required'),
+    body(['education', 'occupation', 'referredBy']).optional().isString().isLength({ max: 120 }),
+    body('maritalStatus').optional().isIn(['', 'single', 'married', 'divorced', 'widowed', 'separated', 'prefer_not_to_say']),
+  ];
+};
 
 router.get(
   '/',
@@ -54,7 +61,6 @@ router.post(
   validate([
     ...profileRules(false),
     emailRule(),
-    body('phone').notEmpty().withMessage('Phone number is required'),
     body('assessmentIds').optional().isArray(),
     body('assessmentIds.*').isMongoId(),
     body('dueDate').optional({ values: 'falsy' }).isISO8601(),

@@ -34,7 +34,7 @@ const registerPatient = async (email, assessmentIds) => {
   const res = await request(app)
     .post('/api/patients')
     .set('Cookie', adminCookie)
-    .send({ fullName: 'Test Patient', email, phone: '+91 98765 43210', dateOfBirth: '1950-01-01', gender: 'female', assessmentIds });
+    .send({ fullName: 'Test Patient', email, phone: '+91 98765 43210', age: 74, gender: 'female', address: '12 Lake Road', city: 'Chennai', state: 'Tamil Nadu', pincode: '600078', location: 'Adyar', assessmentIds });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return res.body.data;
 };
@@ -266,41 +266,94 @@ describe('Record isolation, invitations and versioning', () => {
     assert.equal(res.status, 400);
   });
 
-  test('a new published version does not change existing assignment snapshots', async () => {
-    const { Question } = await import('../src/assessments/model/question.model.js');
-    const { publishAssessment } = await import('../src/assessments/service/assessment.service.js');
-    const p = await onboard('version@example.test', [String(gds._id)]);
-    const list = await request(app).get('/api/me/quizzes').set('Cookie', p.cookie);
-    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${list.body.data.items.find((q) => q.code === 'GDS-15').assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+  test('admin builds a questionnaire, publishes v1, edits, publishes v2; earlier attempts stay on v1', async () => {
+    const staffPost = (path, body) => request(app).post(path).set('Cookie', adminCookie).send(body);
+    const staffPut = (path, body) => request(app).put(path).set('Cookie', adminCookie).send(body);
+    const options = [
+      { label: 'Never', value: '0', score: 0 },
+      { label: 'Sometimes', value: '1', score: 1 },
+      { label: 'Often', value: '2', score: 2 },
+    ];
 
-    const q1 = await Question.findOne({ assessment: gds._id, itemId: '1' });
-    const original = q1.text;
-    q1.text = 'EDITED wording for testing';
-    await q1.save();
-    const published = await publishAssessment(gds._id, null);
-    assert.equal(published.currentVersion, 2);
+    // 1. New questionnaire = draft, invisible to patients
+    const created = await staffPost('/api/assessments', { code: 'SLEEP-3', name: 'Sleep check', category: 'Sleep', description: 'Three sleep questions', instructions: 'Think about the last week.' });
+    assert.equal(created.status, 201, created.body.message);
+    const id = created.body.data._id;
+    assert.equal(created.body.data.status, 'draft');
+    const p = await onboard('builder@example.test', []);
+    const quizCodes = async (cookie) => (await request(app).get('/api/me/quizzes').set('Cookie', cookie)).body.data.items.map((x) => x.code);
+    assert.ok(!(await quizCodes(p.cookie)).includes('SLEEP-3'));
 
-    const view = await request(app).get(`/api/me/assignments/${assignmentId}`).set('Cookie', p.cookie);
-    assert.equal(view.body.data.assessment.version, 1);
-    assert.equal(view.body.data.assessment.questions[0].text, 'Are you basically satisfied with your life?');
+    // 2. Questions, then Publish → v1, visible to patients
+    for (const text of ['Do you wake up at night?', 'Do you feel tired in the morning?', 'Do you nap in the day?']) {
+      const q = await staffPost(`/api/assessments/${id}/questions`, { text, type: 'single_choice', options });
+      assert.equal(q.status, 201, q.body.message);
+    }
+    const v1 = await staffPost(`/api/assessments/${id}/publish`);
+    assert.equal(v1.status, 200, v1.body.message);
+    assert.equal(v1.body.data.currentVersion, 1);
+    assert.equal((await staffPost(`/api/assessments/${id}/publish`)).status, 400, 'nothing to publish');
+    assert.ok((await quizCodes(p.cookie)).includes('SLEEP-3'));
 
-    q1.text = original;
-    await q1.save();
-    await publishAssessment(gds._id, null);
+    // 3. Patient starts on v1
+    const quiz = (await request(app).get('/api/me/quizzes').set('Cookie', p.cookie)).body.data.items.find((x) => x.code === 'SLEEP-3');
+    const { assignmentId } = (await request(app).post(`/api/me/quizzes/${quiz.assessmentId}/start`).set('Cookie', p.cookie)).body.data;
+
+    // 4. Edit wording → draft only; the patient still sees v1
+    const detail = await request(app).get(`/api/assessments/${id}`).set('Cookie', adminCookie);
+    const q1 = detail.body.data.questions[0];
+    const edited = await staffPut(`/api/assessments/questions/${q1._id}`, { text: 'Do you wake up during the night?' });
+    assert.equal(edited.status, 200);
+    assert.equal((await request(app).get(`/api/assessments/${id}`).set('Cookie', adminCookie)).body.data.hasUnpublishedChanges, true);
+    let view = await request(app).get(`/api/me/assignments/${assignmentId}`).set('Cookie', p.cookie);
+    assert.equal(view.body.data.assessment.questions[0].text, 'Do you wake up at night?');
+
+    // 5. Publish → v2; the in-progress attempt stays on v1, a new patient gets v2
+    const v2 = await staffPost(`/api/assessments/${id}/publish`);
+    assert.equal(v2.body.data.currentVersion, 2);
+    view = await request(app).get(`/api/me/assignments/${assignmentId}`).set('Cookie', p.cookie);
+    assert.deepEqual([view.body.data.assessment.version, view.body.data.assessment.questions[0].text], [1, 'Do you wake up at night?']);
+    const p2 = await onboard('builder2@example.test', []);
+    const quiz2 = (await request(app).get('/api/me/quizzes').set('Cookie', p2.cookie)).body.data.items.find((x) => x.code === 'SLEEP-3');
+    const second = (await request(app).post(`/api/me/quizzes/${quiz2.assessmentId}/start`).set('Cookie', p2.cookie)).body.data.assignmentId;
+    const view2 = await request(app).get(`/api/me/assignments/${second}`).set('Cookie', p2.cookie);
+    assert.deepEqual([view2.body.data.assessment.version, view2.body.data.assessment.questions[0].text], [2, 'Do you wake up during the night?']);
+
+    // 6. Reorder and delete work on the draft
+    const ids = (await request(app).get(`/api/assessments/${id}`).set('Cookie', adminCookie)).body.data.questions.map((x) => x._id);
+    const reordered = await staffPut(`/api/assessments/${id}/questions/reorder`, { orderedIds: [...ids].reverse() });
+    assert.equal(reordered.body.data.items[0].text, 'Do you nap in the day?');
+    const removed = await request(app).delete(`/api/assessments/questions/${ids[2]}`).set('Cookie', adminCookie);
+    assert.equal(removed.body.data.items.length, 2);
+
+    // 7. Archive hides it from patients; Restore brings it back
+    await staffPost(`/api/assessments/${id}/archive`);
+    assert.ok(!(await quizCodes(p2.cookie)).includes('SLEEP-3'));
+    assert.equal((await staffPut(`/api/assessments/questions/${ids[0]}`, { text: 'x' })).status, 400, 'archived assessments cannot be edited');
+    await staffPost(`/api/assessments/${id}/restore`);
+    assert.ok((await quizCodes(p2.cookie)).includes('SLEEP-3'));
+    await staffPost(`/api/assessments/${id}/archive`); // leave only the six built-in questionnaires for later tests
   });
 
-  test('assessment create / publish / question-edit endpoints are not exposed', async () => {
+  test('editing safeguards: scoring-linked questions, validation and permissions', async () => {
     const bfi = await Assessment.findOne({ code: 'BFI-10' });
-    for (const [method, path] of [
-      ['post', '/api/assessments'],
-      ['post', `/api/assessments/${bfi._id}/publish`],
-      ['put', `/api/assessments/${bfi._id}`],
-      ['post', `/api/assessments/${bfi._id}/questions`],
-      ['post', `/api/assessments/${bfi._id}/archive`],
-    ]) {
-      const res = await request(app)[method](path).set('Cookie', adminCookie).send({});
-      assert.equal(res.status, 404, `${method} ${path}`);
-    }
+    const detail = await request(app).get(`/api/assessments/${bfi._id}`).set('Cookie', adminCookie);
+    const del = await request(app).delete(`/api/assessments/questions/${detail.body.data.questions[0]._id}`).set('Cookie', adminCookie);
+    assert.equal(del.status, 409, 'questions used by a subscale cannot be deleted');
+
+    const oneOption = await request(app).post(`/api/assessments/${bfi._id}/questions`).set('Cookie', adminCookie).send({ text: 'Bad', type: 'single_choice', options: [{ label: 'Only', value: '1', score: 1 }] });
+    assert.equal(oneOption.status, 400);
+    const dup = await request(app).post('/api/assessments').set('Cookie', adminCookie).send({ code: 'BFI-10', name: 'Duplicate' });
+    assert.equal(dup.status, 409);
+
+    const clinician = await (async () => {
+      const { User } = await import('../src/users/model/user.model.js');
+      const { hashPassword } = await import('../src/auth/service/auth.service.js');
+      await User.create({ name: 'Clin', email: 'clin@example.test', role: 'clinician', status: 'active', passwordHash: await hashPassword('Clinic123') });
+      return login('clin@example.test', 'Clinic123', 'staff');
+    })();
+    assert.equal((await request(app).post('/api/assessments').set('Cookie', clinician).send({ code: 'X-1', name: 'Nope' })).status, 403);
+    assert.equal((await request(app).get(`/api/assessments/${bfi._id}`).set('Cookie', clinician)).status, 200, 'clinicians can still view');
   });
 });
 
@@ -411,14 +464,14 @@ describe('Attempt report (all numbers calculated on the server)', () => {
     assert.equal(score.chips.reduce((n, c) => n + c.count, 0), 5);
     assert.ok(score.rangeNote);
     assert.equal(res.body.data.patient.fullName, 'Test Patient');
-    assert.equal(res.body.data.patient.ageYears, 76);
+    assert.equal(res.body.data.patient.ageYears, 74);
     assert.equal(questions[0].answerLabel, 'Agree');
     assert.equal(questions[0].score, 4);
 
     const detail = await request(app).get(`/api/patients/${p.patient._id}`).set('Cookie', adminCookie);
     const attempt = detail.body.data.assignments.find((a) => String(a._id) === String(assignmentId));
     assert.deepEqual(attempt.progress, { questionCount: 10, answeredCount: 10, percentAnswered: 100 });
-    assert.equal(detail.body.data.patient.ageYears, 76);
+    assert.equal(detail.body.data.patient.ageYears, 74);
 
     const patientTry = await request(app).get(`/api/assignments/${assignmentId}/report`).set('Cookie', p.cookie);
     assert.equal(patientTry.status, 403);
